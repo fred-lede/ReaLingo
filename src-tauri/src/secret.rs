@@ -25,6 +25,7 @@ fn user(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Qwen35 | Protocol::Qwen38 => "api-key",
         Protocol::Openai => "api-key-openai",
+        Protocol::Gemini => "api-key-gemini",
     }
 }
 

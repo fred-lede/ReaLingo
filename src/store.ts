@@ -40,17 +40,18 @@ export interface SubtitleStyle {
  * The message format, which follows the protocol rather than the vendor: Qwen3.8 speaks a
  * different schema from Qwen3/3.5. Model and URL are free-form on top of it.
  */
-export type Protocol = "qwen35" | "qwen38" | "openai";
+export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini";
 
 /** Where each protocol's key lives. A key belongs to the account, so both Qwens share one. */
-const KEY_FIELD = { qwen35: "apiKey", qwen38: "apiKey", openai: "openaiKey" } as const;
+const KEY_FIELD = { qwen35: "apiKey", qwen38: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
 /** One protocol per credential-store slot, for the loops that visit every key once. */
-const KEY_SLOTS = ["qwen35", "openai"] as const;
+const KEY_SLOTS = ["qwen35", "openai", "gemini"] as const;
 
 export interface Settings {
   protocol: Protocol;
   apiKey: string;
   openaiKey: string;
+  geminiKey: string;
   /** Empty: the protocol's default endpoint. */
   url: string;
   workspaceId: string;
@@ -73,6 +74,7 @@ export const settings = reactive<Settings>({
   protocol: "qwen35",
   apiKey: "",
   openaiKey: "",
+  geminiKey: "",
   url: "",
   workspaceId: "",
   region: "beijing",

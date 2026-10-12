@@ -6,62 +6,52 @@
 //!   cargo run --example probe -- path\to\audio.wav [target_lang] [model]
 //!   set DASHSCOPE_WORKSPACE_ID=llm-...   (optional dedicated endpoint)
 //!   set OPENAI_API_KEY=sk-...            (instead: probe OpenAI gpt-realtime-translate)
-//!   set PROBE_PROTOCOL=qwen38            (qwen35 | qwen38 | openai; default follows the key)
+//!   set GEMINI_API_KEY=AIza...           (instead: probe Gemini Live Translate)
+//!   set PROBE_PROTOCOL=qwen38            (qwen35 | qwen38 | openai | gemini; default follows the key)
 
-use realingo_lib::config::{Protocol, Region, Settings};
-use realingo_lib::decode;
+use realingo_lib::config::{Protocol, Settings};
+use realingo_lib::{decode, realtime};
 
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: probe <audio file> [target lang] [model]");
-    let target = std::env::args().nth(2).unwrap_or_else(|| "zh".into());
-    let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-    let protocol = match std::env::var("PROBE_PROTOCOL").as_deref() {
-        Ok("qwen38") => Protocol::Qwen38,
-        Ok("qwen35") => Protocol::Qwen35,
-        _ if openai_key.is_empty() => Protocol::Qwen35,
-        _ => Protocol::Openai,
-    };
-    let api_key = if openai_key.is_empty() {
-        std::env::var("DASHSCOPE_API_KEY").expect("set DASHSCOPE_API_KEY or OPENAI_API_KEY")
-    } else {
-        String::new()
-    };
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
 
-    let settings = Settings {
-        protocol,
-        api_key,
-        openai_key,
-        url: std::env::var("PROBE_URL").unwrap_or_default(),
-        workspace_id: std::env::var("DASHSCOPE_WORKSPACE_ID").unwrap_or_default(),
-        region: Region::Beijing,
-        source_lang: "auto".into(),
-        target_lang: target,
-        // Empty falls back to the protocol's default model.
-        model: std::env::args().nth(3).unwrap_or_default(),
-        hotwords: Default::default(),
-        // set PROBE_SPEAK=1 to see the audio-modality frames too.
-        speak: std::env::var_os("PROBE_SPEAK").is_some(),
-        voice: std::env::var("PROBE_VOICE").unwrap_or_else(|_| realingo_lib::config::VOICE.into()),
+    // Every other field keeps the app's own default.
+    let mut settings: Settings = serde_json::from_value(serde_json::json!({}))?;
+    settings.api_key = env("DASHSCOPE_API_KEY");
+    settings.openai_key = env("OPENAI_API_KEY");
+    settings.gemini_key = env("GEMINI_API_KEY");
+    settings.protocol = match env("PROBE_PROTOCOL").as_str() {
+        "qwen35" => Protocol::Qwen35,
+        "qwen38" => Protocol::Qwen38,
+        "openai" => Protocol::Openai,
+        "gemini" => Protocol::Gemini,
+        _ if !settings.gemini_key.is_empty() => Protocol::Gemini,
+        _ if !settings.openai_key.is_empty() => Protocol::Openai,
+        _ => Protocol::Qwen35,
     };
+    assert!(!settings.key().is_empty(), "set DASHSCOPE_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY");
+    settings.url = env("PROBE_URL");
+    settings.workspace_id = env("DASHSCOPE_WORKSPACE_ID");
+    settings.target_lang = std::env::args().nth(2).unwrap_or_else(|| "zh".into());
+    // Empty falls back to the protocol's default model.
+    settings.model = std::env::args().nth(3).unwrap_or_default();
+    // set PROBE_SPEAK=1 to see the audio-modality frames too.
+    settings.speak = std::env::var_os("PROBE_SPEAK").is_some();
+    if let Ok(voice) = std::env::var("PROBE_VOICE") {
+        settings.voice = voice;
+    }
 
+    // The URL as Settings shows it: for Gemini that is without the key.
     println!("→ {}", settings.ws_url());
-    let mut request = settings.ws_url().into_client_request()?;
-    request.headers_mut().insert(
-        "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", settings.key()))?,
-    );
-
-    let (ws, response) = tokio_tungstenite::connect_async(request).await?;
+    let (ws, response) = tokio_tungstenite::connect_async(realtime::client_request(&settings)?).await?;
     println!("← handshake {}", response.status());
 
     let (mut write, mut read) = ws.split();
@@ -69,8 +59,28 @@ async fn main() -> anyhow::Result<()> {
     println!("→ {update}");
     write.send(Message::Text(update.to_string().into())).await?;
 
+    let idle = std::time::Duration::from_secs(20);
+    // Gemini text arrives in binary frames; print both kinds the same way.
+    let text = |msg: &Message| match msg {
+        Message::Text(t) => Some(t.to_string()),
+        Message::Binary(b) => String::from_utf8(b.to_vec()).ok(),
+        _ => None,
+    };
+    if settings.waits_for_setup() {
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout(idle, read.next()).await {
+            if let Message::Close(c) = &msg {
+                println!("← close {c:?}");
+                return Ok(());
+            }
+            let Some(t) = text(&msg) else { continue };
+            println!("← {t}");
+            if t.contains("setupComplete") {
+                break;
+            }
+        }
+    }
+
     let rate = settings.sample_rate();
-    let (append, finish, _) = settings.wire();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
     let stop = Arc::new(AtomicBool::new(false));
     let file = std::path::PathBuf::from(path);
@@ -80,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let wire = settings.clone();
     let uplink = tokio::spawn(async move {
         let mut chunks = 0u32;
         while let Some(chunk) = rx.recv().await {
@@ -87,28 +98,23 @@ async fn main() -> anyhow::Result<()> {
             for s in &chunk {
                 bytes.extend_from_slice(&s.to_le_bytes());
             }
-            let frame = json!({
-                "type": append,
-                "audio": BASE64_STANDARD.encode(&bytes),
-            });
+            let frame = wire.audio_frame(BASE64_STANDARD.encode(&bytes));
             if write.send(Message::Text(frame.to_string().into())).await.is_err() {
                 return;
             }
             chunks += 1;
         }
         eprintln!("[uplink] sent {chunks} chunks ({}s of audio)", chunks / 10);
-        let _ = write.send(Message::Text(json!({ "type": finish }).to_string().into())).await;
+        let _ = write.send(Message::Text(wire.finish_frame().to_string().into())).await;
     });
 
-    let idle = std::time::Duration::from_secs(20);
     while let Ok(Some(Ok(msg))) = tokio::time::timeout(idle, read.next()).await {
-        match msg {
-            Message::Text(t) => println!("← {t}"),
-            Message::Close(c) => {
-                println!("← close {c:?}");
-                break;
-            }
-            _ => {}
+        if let Message::Close(c) = &msg {
+            println!("← close {c:?}");
+            break;
+        }
+        if let Some(t) = text(&msg) {
+            println!("← {t}");
         }
     }
     let _ = uplink.await;

@@ -131,7 +131,7 @@ watch(autoSourceOnly, (only) => {
 // Why speaking cannot happen with the current choices, if it cannot. Linux has no way to
 // leave our own playback out of a monitor source, so system audio would hear itself.
 const speakBlocked = computed(() => {
-  if (!canSpeak(settings.targetLang)) return "speakNoLang" as const;
+  if (!canSpeak(settings.protocol, settings.targetLang)) return "speakNoLang" as const;
   if (caps.value.os === "linux" && sourceKind.value === "system") return "speakLinuxSystem" as const;
   return null;
 });
@@ -472,8 +472,8 @@ watch([lines, current], async () => {
             </label>
             <p v-if="settings.speak && speakBlocked" class="hint">{{ t(speakBlocked) }}</p>
             <template v-else-if="settings.speak">
-              <!-- OpenAI picks its own voice; there is nothing to choose. -->
-              <p v-if="settings.protocol === 'openai'" class="hint">{{ t("voiceOpenai") }}</p>
+              <!-- OpenAI and Gemini pick their own voice; there is nothing to choose. -->
+              <p v-if="settings.protocol === 'openai' || settings.protocol === 'gemini'" class="hint">{{ t("voiceServer") }}</p>
               <div v-else class="line">
                 <span>{{ t("voice") }}</span>
                 <Picker v-model="settings.voice" class="grow" :options="voiceOptions" :disabled="isRunning()" />

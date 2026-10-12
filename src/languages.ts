@@ -85,6 +85,7 @@ export const MODEL_QWEN3_5 = "qwen3.5-livetranslate-flash-realtime";
 export const MODEL_QWEN3_8 = "qwen3.8-livetranslate-flash-realtime";
 export const MODEL_QWEN3 = "qwen3-livetranslate-flash-realtime";
 export const MODEL_OPENAI = "gpt-realtime-translate";
+export const MODEL_GEMINI = "gemini-3.5-live-translate-preview";
 
 export interface Preset {
   id: string;
@@ -100,6 +101,7 @@ export const PRESETS: Record<Protocol, Preset[]> = {
   ],
   qwen38: [{ id: MODEL_QWEN3_8, name: "Qwen3.8", langs: 60 }],
   openai: [{ id: MODEL_OPENAI, name: "GPT-Realtime-Translate", langs: 13 }],
+  gemini: [{ id: MODEL_GEMINI, name: "Gemini 3.5 Live Translate", langs: 54 }],
 };
 
 /** Short display name: the preset's own, or the raw id for a custom model. */
@@ -114,14 +116,20 @@ const QWEN3_CODES = new Set(
 /** gpt-realtime-translate hears 70+ languages but speaks only these 13 (all tts-capable). */
 const OPENAI_CODES = new Set("es pt fr ja ru zh de ko hi id vi it en".split(" "));
 
+/** Of this table, the ones Gemini Live Translate's 70+ language list does not include. */
+const GEMINI_MISSING = new Set("yue ast bs ceb ky tg".split(" "));
+
 /** Codes the given model can actually translate into. */
 export function languageCodes(protocol: string, model: string): string[] {
   const all = LANGUAGES.map((l) => l.code);
   if (protocol === "openai") return all.filter((c) => OPENAI_CODES.has(c));
+  if (protocol === "gemini") return all.filter((c) => !GEMINI_MISSING.has(c));
   return model === MODEL_QWEN3 ? all.filter((c) => QWEN3_CODES.has(c)) : all;
 }
 
-export function canSpeak(code: string): boolean {
+/** Only Qwen speaks a subset; OpenAI and Gemini are speech-to-speech in every language they offer. */
+export function canSpeak(protocol: string, code: string): boolean {
+  if (protocol === "openai" || protocol === "gemini") return true;
   return BY_CODE.get(code)?.tts ?? false;
 }
 

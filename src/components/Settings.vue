@@ -45,7 +45,8 @@ watch(hotwordText, (text) => {
 });
 const hotwordCount = computed(() => Object.keys(settings.hotwords).length);
 
-const isOpenai = computed(() => settings.protocol === "openai");
+/** Region, workspace, hotwords and the Model Studio links only mean something for Qwen. */
+const isQwen = computed(() => settings.protocol === "qwen35" || settings.protocol === "qwen38");
 
 const presets = computed(() =>
   PRESETS[settings.protocol].map((p) => ({ value: p.id, label: p.name, note: `${p.langs} ${t("langsUnit")}` }))
@@ -71,7 +72,8 @@ const apiKey = computed({ get: activeKey, set: setActiveKey });
  */
 function pickProtocol(p: Protocol) {
   if (p === settings.protocol) return;
-  if ((p === "openai") !== isOpenai.value) settings.url = "";
+  const vendor = (x: Protocol) => (x === "qwen35" || x === "qwen38" ? "qwen" : x);
+  if (vendor(p) !== vendor(settings.protocol)) settings.url = "";
   settings.protocol = p;
   settings.model = PRESETS[p][0].id;
   customModel.value = false;
@@ -82,6 +84,7 @@ const protocolOptions = computed(() => [
   { value: "qwen35", label: t("protocolQwen35"), note: t("vendorQwen") },
   { value: "qwen38", label: t("protocolQwen38"), note: t("vendorQwen") },
   { value: "openai", label: t("protocolOpenai") },
+  { value: "gemini", label: t("protocolGemini"), note: "Google" },
 ]);
 const protocolPick = computed({
   get: () => settings.protocol as string,
@@ -90,8 +93,13 @@ const protocolPick = computed({
 
 /** Model Studio console pages are per region; the region id is part of the path. */
 const consoleUrl = (page: string) => `https://bailian.console.aliyun.com/${REGION_ID[settings.region]}/${page}`;
-const keyConsole = computed(() =>
-  isOpenai.value ? "https://platform.openai.com/api-keys" : consoleUrl("model/settings/api-key")
+const keyConsole = computed(() => {
+  if (settings.protocol === "openai") return "https://platform.openai.com/api-keys";
+  if (settings.protocol === "gemini") return "https://aistudio.google.com/apikey";
+  return consoleUrl("model/settings/api-key");
+});
+const keyConsoleLabel = computed(() =>
+  t(settings.protocol === "openai" ? "apiKeyGetOpenai" : settings.protocol === "gemini" ? "apiKeyGetGemini" : "apiKeyGet")
 );
 // The opener plugin, not an <a href>: a plain link navigates the app's own webview away.
 const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
@@ -118,7 +126,7 @@ const advancedOpen = !!settings.url;
       <div class="field">
         <span class="label">{{ t("protocol") }}</span>
         <Picker v-model="protocolPick" :options="protocolOptions" :disabled="isRunning()" />
-        <small v-if="!isOpenai">{{ t("protocolHint") }}</small>
+        <small v-if="isQwen">{{ t("protocolHint") }}</small>
       </div>
 
       <label class="field">
@@ -127,7 +135,7 @@ const advancedOpen = !!settings.url;
         <small>
           {{ keyringOk ? t("apiKeyHint") : t("apiKeyPlain") }}
           <button class="link" @click.prevent="openUrl(keyConsole)">
-            {{ isOpenai ? t("apiKeyGetOpenai") : t("apiKeyGet") }} ↗
+            {{ keyConsoleLabel }} ↗
           </button>
         </small>
       </label>
@@ -144,17 +152,17 @@ const advancedOpen = !!settings.url;
           spellcheck="false"
         />
         <!-- Regions carry different model lists; worth checking before blaming the app. -->
-        <small v-if="!isOpenai">
+        <small v-if="isQwen">
           <button class="link" @click.prevent="openUrl(consoleUrl('model/market'))">{{ t("modelsLink") }} ↗</button>
         </small>
       </div>
 
-      <div v-if="!isOpenai" class="field">
+      <div v-if="isQwen" class="field">
         <span class="label">{{ t("region") }}</span>
         <Picker v-model="regionPick" :options="regionOptions" :disabled="isRunning()" />
       </div>
 
-      <label v-if="!isOpenai" class="field">
+      <label v-if="isQwen" class="field">
         <span class="label">{{ t("workspace") }}</span>
         <!-- Beijing workspace IDs start with "llm-", every other region's with "ws-". -->
         <input
@@ -172,7 +180,7 @@ const advancedOpen = !!settings.url;
     </section>
 
     <!-- Hotwords are the group's only item, so its name rides on the title line. -->
-    <section v-if="!isOpenai" class="group">
+    <section v-if="isQwen" class="group">
       <h3>{{ t("groupTranslate") }} <span class="sub">{{ t("hotwords") }}</span></h3>
       <textarea
         v-model="hotwordText"

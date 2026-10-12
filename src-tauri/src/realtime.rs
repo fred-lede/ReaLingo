@@ -1,4 +1,4 @@
-//! WebSocket client for the realtime translation endpoints (Model Studio and OpenAI).
+//! WebSocket client for the realtime translation endpoints (Model Studio, OpenAI, Gemini).
 //!
 //! This lives in Rust rather than the webview for one hard reason: the endpoint authenticates
 //! with an `Authorization` request header, and the browser `WebSocket` constructor cannot set
@@ -8,18 +8,21 @@ use anyhow::{anyhow, Result};
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::config::Settings;
+use crate::config::{Protocol, Settings};
 use crate::player::Player;
 
 pub const EVENT: &str = "rt://event";
@@ -84,13 +87,7 @@ async fn connect_and_pump(
         return Err(anyhow!("API key is empty"));
     }
 
-    let mut request = settings.ws_url().into_client_request()?;
-    request.headers_mut().insert(
-        "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", settings.key().trim()))?,
-    );
-
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(request))
+    let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(client_request(settings)?))
         .await
         .map_err(|_| anyhow!("connection timed out after 15s"))?
         .map_err(|e| anyhow!("connect failed: {e}"))?;
@@ -100,11 +97,17 @@ async fn connect_and_pump(
     write.send(Message::Text(settings.session_update().to_string().into())).await?;
     note(app, "status", "connected");
 
-    let (append, finish, finished) = settings.wire();
-    // Uplink: PCM chunks -> base64 -> append, until the user stops or
+    // Released at once, except for Gemini, which drops audio sent before `setupComplete`.
+    let ready = Arc::new(Notify::new());
+    if !settings.waits_for_setup() {
+        ready.notify_one();
+    }
+
+    // Uplink: PCM chunks -> base64 -> the protocol's audio frame, until the user stops or
     // the source runs out (a file at EOF drops its sender).
-    let stop_up = stop.clone();
+    let (stop_up, ready_up, wire) = (stop.clone(), ready.clone(), settings.clone());
     let uplink = tokio::spawn(async move {
+        ready_up.notified().await;
         while let Some(chunk) = audio_rx.recv().await {
             if stop_up.load(Ordering::Relaxed) {
                 break;
@@ -113,19 +116,16 @@ async fn connect_and_pump(
             for s in &chunk {
                 bytes.extend_from_slice(&s.to_le_bytes());
             }
-            let frame = json!({
-                "type": append,
-                "audio": BASE64_STANDARD.encode(&bytes),
-            });
+            let frame = wire.audio_frame(BASE64_STANDARD.encode(&bytes));
             if write.send(Message::Text(frame.to_string().into())).await.is_err() {
                 return None;
             }
         }
         // Finishing: the reader below switches to the short wait, and capture stops.
         stop_up.store(true, Ordering::Relaxed);
-        let _ = write.send(Message::Text(json!({ "type": finish }).to_string().into())).await;
+        let _ = write.send(Message::Text(wire.finish_frame().to_string().into())).await;
         // Not closed here: a close frame makes the server hang up before the last sentence
-        // is out. The reader closes it once `finished` says everything has arrived.
+        // is out. The reader closes it once `is_finished` says everything has arrived.
         Some(write)
     });
 
@@ -142,37 +142,65 @@ async fn connect_and_pump(
             Ok(None) => break,
             Ok(Some(m)) => m,
         };
-        match msg {
-            Ok(Message::Text(text)) => {
-                if let Ok(mut value) = serde_json::from_str::<Value>(&text) {
-                    if let Some(audio) = take_audio(&mut value) {
-                        if let Some(p) = player.as_mut() {
-                            p.push(&audio);
-                        }
-                    }
-                    let _ = app.emit(RAW_EVENT, &value);
-                    if let Some(reason) = rejection(&value) {
-                        return Err(anyhow!(reason));
-                    }
-                    for ev in text_stream.next(&value) {
-                        emit(app, ev);
-                    }
-                    if value.get("type").and_then(Value::as_str) == Some(finished) {
-                        break;
-                    }
-                }
+        let payload = match msg {
+            Ok(Message::Text(text)) => text.as_str().to_owned(),
+            // Gemini sends its JSON in binary frames.
+            Ok(Message::Binary(bytes)) => match String::from_utf8(bytes.to_vec()) {
+                Ok(text) => text,
+                Err(_) => continue,
+            },
+            // Gemini reports a bad key or setup by closing with a reason, not with a frame.
+            Ok(Message::Close(Some(frame))) if frame.code != CloseCode::Normal && !frame.reason.is_empty() => {
+                return Err(anyhow!("closed by server: {}", frame.reason));
             }
             Ok(Message::Close(_)) => break,
-            Ok(_) => {}
+            Ok(_) => continue,
             Err(e) => return Err(anyhow!("socket error: {e}")),
+        };
+        let Ok(mut value) = serde_json::from_str::<Value>(&payload) else { continue };
+        if value.get("setupComplete").is_some() {
+            ready.notify_one();
+        }
+        if let Some(audio) = take_audio(&mut value) {
+            if let Some(p) = player.as_mut() {
+                p.push(&audio);
+            }
+        }
+        let _ = app.emit(RAW_EVENT, &value);
+        if let Some(reason) = rejection(&value) {
+            return Err(anyhow!(reason));
+        }
+        for ev in text_stream.next(&value) {
+            emit(app, ev);
+        }
+        if settings.is_finished(&value) {
+            break;
         }
     }
 
     stop.store(true, Ordering::Relaxed);
+    // A setup that never completed would leave the uplink parked forever; let it see `stop`.
+    ready.notify_one();
     if let Ok(Some(mut write)) = uplink.await {
         let _ = write.close().await;
     }
     Ok(())
+}
+
+/// The handshake request, with the key where the protocol expects it. Public so the probe
+/// example dials exactly what the app does.
+pub fn client_request(settings: &Settings) -> Result<Request> {
+    let key = settings.key().trim();
+    if settings.protocol == Protocol::Gemini {
+        // The Live API takes the key as a query parameter. Added here, never in `ws_url`,
+        // which the Settings sheet displays.
+        let url = settings.ws_url();
+        let sep = if url.contains('?') { '&' } else { '?' };
+        return Ok(format!("{url}{sep}key={key}").into_client_request()?);
+    }
+    let mut request = settings.ws_url().into_client_request()?;
+    request.headers_mut().insert("Authorization", HeaderValue::from_str(&format!("Bearer {key}"))?);
+    Ok(request)
 }
 
 /// DashScope refuses a session (unknown model, bad parameter) with a bare
@@ -190,20 +218,31 @@ fn rejection(v: &Value) -> Option<String> {
 /// Pulls the PCM out of an audio delta frame and leaves its byte count behind:
 /// several KB of base64 ten times a second is no use in the diagnostics drawer.
 fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
-    let ty = v.get("type").and_then(Value::as_str);
-    if !matches!(ty, Some("response.audio.delta" | "session.output_audio.delta")) {
+    let is_delta = matches!(
+        v.get("type").and_then(Value::as_str),
+        Some("response.audio.delta" | "session.output_audio.delta")
+    );
+    // Qwen and OpenAI carry one `delta`; Gemini a list of parts, each with inline data.
+    let slots: Vec<&mut Value> = if is_delta {
+        v.get_mut("delta").into_iter().collect()
+    } else if let Some(parts) = v.pointer_mut("/serverContent/modelTurn/parts").and_then(Value::as_array_mut) {
+        parts.iter_mut().filter_map(|p| p.pointer_mut("/inlineData/data")).collect()
+    } else {
         return None;
+    };
+    let mut pcm = Vec::new();
+    for slot in slots {
+        let Some(bytes) = slot.as_str().and_then(|s| BASE64_STANDARD.decode(s).ok()) else { continue };
+        *slot = format!("<{} bytes>", bytes.len()).into();
+        pcm.extend(bytes);
     }
-    let delta = v.get_mut("delta")?;
-    let bytes = BASE64_STANDARD.decode(delta.as_str()?).ok()?;
-    *delta = format!("<{} bytes>", bytes.len()).into();
-    Some(bytes)
+    (!pcm.is_empty()).then_some(pcm)
 }
 
 #[derive(Default)]
 struct TextStream {
     partial: BTreeMap<(&'static str, String), String>,
-    /// OpenAI only: the one open turn, see [`TextStream::continuous`].
+    /// OpenAI and Gemini: the one open turn, see [`TextStream::continuous`].
     turn: u64,
     open: bool,
     source: String,
@@ -216,6 +255,17 @@ const MAX_TURN_CHARS: usize = 150;
 
 impl TextStream {
     fn next(&mut self, v: &Value) -> Vec<Event> {
+        // Gemini: the same two append-only streams as OpenAI, untyped, and one frame may carry
+        // either or both alongside the audio.
+        if let Some(content) = v.get("serverContent") {
+            let mut out = Vec::new();
+            for (field, is_target) in [("inputTranscription", false), ("outputTranscription", true)] {
+                if let Some(text) = content.pointer(&format!("/{field}/text")).and_then(Value::as_str) {
+                    out.extend(self.continuous(is_target, text));
+                }
+            }
+            return out;
+        }
         match v.get("type").and_then(Value::as_str) {
             Some(ty @ ("session.input_transcript.delta" | "session.output_transcript.delta")) => {
                 let delta = v.get("delta").and_then(Value::as_str).unwrap_or_default();
@@ -382,6 +432,7 @@ fn classify(v: &Value) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn qwen3_8_deltas_accumulate_per_item_and_finish_without_duplicates() {
@@ -558,6 +609,46 @@ mod tests {
     fn session_closed_ends_the_session_like_finished() {
         let ev = classify(&json!({ "type": "session.closed", "event_id": "e" })).unwrap();
         assert_eq!((ev.kind, ev.text.as_str()), ("status", "closed"));
+    }
+
+    /// Shapes from the Gemini Live translation docs' raw-WebSocket example.
+    #[test]
+    fn gemini_transcripts_feed_the_same_turns_and_its_audio_is_extracted() {
+        let mut st = TextStream::default();
+        let src = st.next(&json!({ "serverContent": { "inputTranscription": { "text": "Good morning.", "languageCode": "en" } } }));
+        assert_eq!(src[0].kind, "link");
+        assert!(src.iter().any(|e| e.kind == "source" && e.text == "Good morning."));
+        // Transcript and translation in one frame: both land, and the stop closes the turn.
+        let both = st.next(&json!({ "serverContent": {
+            "inputTranscription": { "text": " Welcome" },
+            "outputTranscription": { "text": "早上好。" }
+        } }));
+        let done = both.iter().find(|e| e.kind == "target" && e.done).unwrap();
+        assert_eq!((done.id.as_str(), done.text.as_str()), ("oa0", "早上好。"));
+        // A frame with neither (audio only, turnComplete) yields no text events.
+        assert!(st.next(&json!({ "serverContent": { "turnComplete": true } })).is_empty());
+
+        let mut audio = json!({ "serverContent": { "modelTurn": { "parts": [
+            { "inlineData": { "mimeType": "audio/pcm;rate=24000", "data": BASE64_STANDARD.encode([1u8, 2]) } },
+            { "inlineData": { "mimeType": "audio/pcm;rate=24000", "data": BASE64_STANDARD.encode([3u8]) } }
+        ] } } });
+        assert_eq!(take_audio(&mut audio).unwrap(), vec![1, 2, 3]);
+        assert_eq!(audio.pointer("/serverContent/modelTurn/parts/0/inlineData/data").unwrap(), "<2 bytes>");
+        assert!(take_audio(&mut json!({ "setupComplete": {} })).is_none());
+    }
+
+    #[test]
+    fn gemini_puts_the_key_in_the_url_and_the_others_in_a_header() {
+        let mut s: Settings = serde_json::from_value(json!({ "protocol": "gemini", "geminiKey": "AIza-test" })).unwrap();
+        let req = client_request(&s).unwrap();
+        assert!(req.uri().to_string().ends_with("BidiGenerateContent?key=AIza-test"));
+        assert!(req.headers().get("Authorization").is_none());
+
+        s.protocol = Protocol::Openai;
+        s.openai_key = "sk-test".into();
+        let req = client_request(&s).unwrap();
+        assert_eq!(req.headers()["Authorization"], "Bearer sk-test");
+        assert!(!req.uri().to_string().contains("key="));
     }
 
     /// Captured from a Tokyo workspace, which has no LiveTranslate models.

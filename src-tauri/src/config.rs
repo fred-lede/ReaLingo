@@ -10,6 +10,9 @@ pub const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
 pub const MODEL_OPENAI: &str = "gpt-realtime-translate";
 /// Without a transcription model the OpenAI session sends no source transcript at all.
 pub const OPENAI_ASR_MODEL: &str = "gpt-realtime-whisper";
+pub const MODEL_GEMINI: &str = "gemini-3.5-live-translate-preview";
+const GEMINI_URL: &str =
+    "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 /// The service's own default; any name from the Model Studio voice list works.
 pub const VOICE: &str = "Tina";
 
@@ -18,7 +21,7 @@ pub const VOICE: &str = "Tina";
 // ponytail: only the regions that serve the LiveTranslate models. Model Studio has more
 // (Frankfurt, Tokyo, Hong Kong, Virginia), but a Tokyo workspace answered "Model not exist"
 // for every realtime model, and the LiveTranslate docs list just these two. Add a variant
-// here (and in REGIONS in store.ts) once another region carries them.
+// here (and in REGION_ID in store.ts) once another region carries them.
 pub enum Region {
     #[default]
     Beijing,
@@ -54,6 +57,8 @@ pub enum Protocol {
     Qwen35,
     Qwen38,
     Openai,
+    /// Google's Gemini Live API (`BidiGenerateContent`) with a `translationConfig`.
+    Gemini,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -66,8 +71,10 @@ pub struct Settings {
     pub api_key: String,
     #[serde(default)]
     pub openai_key: String,
+    #[serde(default)]
+    pub gemini_key: String,
     /// Optional. Empty => the protocol's own endpoint; set => dialled as-is, plus `model=`
-    /// unless the URL already carries one.
+    /// unless the URL already carries one (Qwen, OpenAI — Gemini names its model in `setup`).
     #[serde(default)]
     pub url: String,
     /// Optional. Empty => the shared public endpoint; set => the workspace's dedicated domain.
@@ -113,6 +120,7 @@ impl Settings {
         match self.protocol {
             Protocol::Qwen35 | Protocol::Qwen38 => &self.api_key,
             Protocol::Openai => &self.openai_key,
+            Protocol::Gemini => &self.gemini_key,
         }
     }
 
@@ -120,6 +128,7 @@ impl Settings {
         match self.protocol {
             Protocol::Qwen35 | Protocol::Qwen38 => &mut self.api_key,
             Protocol::Openai => &mut self.openai_key,
+            Protocol::Gemini => &mut self.gemini_key,
         }
     }
 
@@ -128,23 +137,63 @@ impl Settings {
             ("", Protocol::Qwen35) => MODEL_QWEN3_5,
             ("", Protocol::Qwen38) => MODEL_QWEN3_8,
             ("", Protocol::Openai) => MODEL_OPENAI,
+            ("", Protocol::Gemini) => MODEL_GEMINI,
             (m, _) => m,
         }
     }
 
-    /// What the uplink must send: Qwen takes 16 kHz, OpenAI rejects anything but 24 kHz.
+    /// What the uplink must send: OpenAI rejects anything but 24 kHz; the rest take 16 kHz.
     pub fn sample_rate(&self) -> u32 {
         match self.protocol {
-            Protocol::Qwen35 | Protocol::Qwen38 => 16_000,
             Protocol::Openai => 24_000,
+            Protocol::Qwen35 | Protocol::Qwen38 | Protocol::Gemini => 16_000,
         }
     }
 
-    /// Event types for (append audio, finish, server says finished).
-    pub fn wire(&self) -> (&'static str, &'static str, &'static str) {
+    /// One chunk of base64 PCM, wrapped the way the protocol wants it.
+    pub fn audio_frame(&self, b64: String) -> serde_json::Value {
         match self.protocol {
-            Protocol::Qwen35 | Protocol::Qwen38 => ("input_audio_buffer.append", "session.finish", "session.finished"),
-            Protocol::Openai => ("session.input_audio_buffer.append", "session.close", "session.closed"),
+            Protocol::Qwen35 | Protocol::Qwen38 => serde_json::json!({ "type": "input_audio_buffer.append", "audio": b64 }),
+            Protocol::Openai => serde_json::json!({ "type": "session.input_audio_buffer.append", "audio": b64 }),
+            Protocol::Gemini => serde_json::json!({
+                "realtimeInput": { "audio": { "data": b64, "mimeType": format!("audio/pcm;rate={}", self.sample_rate()) } }
+            }),
+        }
+    }
+
+    /// End of input: the server flushes the last sentence, then (except Gemini) says so.
+    pub fn finish_frame(&self) -> serde_json::Value {
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => serde_json::json!({ "type": "session.finish" }),
+            Protocol::Openai => serde_json::json!({ "type": "session.close" }),
+            Protocol::Gemini => serde_json::json!({ "realtimeInput": { "audioStreamEnd": true } }),
+        }
+    }
+
+    /// Whether this frame means everything owed after `finish_frame` has arrived.
+    // ponytail: Gemini's translation docs name no such frame, so a Gemini stop waits out the
+    // reader's short idle timeout instead; switch it once a live probe shows the real end.
+    pub fn is_finished(&self, v: &serde_json::Value) -> bool {
+        let ty = v.get("type").and_then(serde_json::Value::as_str);
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => ty == Some("session.finished"),
+            Protocol::Openai => ty == Some("session.closed"),
+            Protocol::Gemini => false,
+        }
+    }
+
+    /// Gemini wants its `setup` acknowledged before any audio; the others take it at once.
+    pub fn waits_for_setup(&self) -> bool {
+        self.protocol == Protocol::Gemini
+    }
+
+    /// Target language as the service spells it: Gemini wants a script or regional variant
+    /// for the two languages where it distinguishes them.
+    fn target_code(&self) -> &str {
+        match (self.protocol, self.target_lang.as_str()) {
+            (Protocol::Gemini, "zh") => "zh-Hans",
+            (Protocol::Gemini, "pt") => "pt-BR",
+            (_, code) => code,
         }
     }
 
@@ -152,14 +201,17 @@ impl Settings {
         let model = self.model();
         let custom = self.url.trim();
         if !custom.is_empty() {
-            if custom.contains("model=") {
+            if self.protocol == Protocol::Gemini || custom.contains("model=") {
                 return custom.to_string();
             }
             let sep = if custom.contains('?') { '&' } else { '?' };
             return format!("{custom}{sep}model={model}");
         }
-        if self.protocol == Protocol::Openai {
-            return format!("wss://api.openai.com/v1/realtime/translations?model={model}");
+        match self.protocol {
+            Protocol::Openai => return format!("wss://api.openai.com/v1/realtime/translations?model={model}"),
+            // Without the key: it goes on at connect time, because Settings displays this.
+            Protocol::Gemini => return GEMINI_URL.into(),
+            Protocol::Qwen35 | Protocol::Qwen38 => {}
         }
         let ws = self.workspace_id.trim();
         let host = if ws.is_empty() {
@@ -172,7 +224,27 @@ impl Settings {
 
     /// The `session.update` payload. Text always (it drives the subtitles); audio on top when
     /// speaking, which arrives as 24 kHz mono PCM16 in `response.audio.delta`.
+    ///
+    /// Gemini's equivalent is its `setup` message. Neither docs example has the layout right;
+    /// the live endpoint, probed field by field, wants the transcription switches at the top of
+    /// `setup` and `translationConfig` inside `generationConfig` — anything else is closed
+    /// with "Unknown name … Cannot find field".
     pub fn session_update(&self) -> serde_json::Value {
+        if self.protocol == Protocol::Gemini {
+            // Echo off: a speaker already in the target language is not read back. The source
+            // is always detected; there is no source-language setting to send.
+            return serde_json::json!({
+                "setup": {
+                    "model": format!("models/{}", self.model()),
+                    "generationConfig": {
+                        "responseModalities": ["AUDIO"],
+                        "translationConfig": { "targetLanguageCode": self.target_code(), "echoTargetLanguage": false }
+                    },
+                    "inputAudioTranscription": {},
+                    "outputAudioTranscription": {}
+                }
+            });
+        }
         // Source language, hotwords, voice and VAD have no OpenAI counterpart; the source is
         // always detected. Audio is always produced — `speak` only decides whether we play it.
         if self.protocol == Protocol::Openai {
@@ -256,6 +328,7 @@ mod tests {
             protocol: Protocol::Qwen35,
             api_key: "k".into(),
             openai_key: "o".into(),
+            gemini_key: "g".into(),
             url: String::new(),
             workspace_id: workspace_id.into(),
             region,
@@ -400,7 +473,7 @@ mod tests {
         assert_eq!(o.ws_url(), "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate");
         assert_eq!(o.key(), "o");
         assert_eq!(o.sample_rate(), 24_000);
-        assert_eq!(o.wire().0, "session.input_audio_buffer.append");
+        assert_eq!(o.audio_frame("QQ==".into())["type"], "session.input_audio_buffer.append");
         let session = &o.session_update()["session"];
         assert_eq!(session["audio"]["output"]["language"], "zh");
         assert_eq!(session["audio"]["input"]["transcription"]["model"], OPENAI_ASR_MODEL);
@@ -419,5 +492,41 @@ mod tests {
         c.model = " my-model ".into();
         c.url.clear();
         assert!(c.ws_url().ends_with("?model=my-model"));
+    }
+
+    #[test]
+    fn gemini_sets_up_translation_in_its_own_message() {
+        let mut g = s(Region::Beijing, "llm-abc");
+        g.protocol = Protocol::Gemini;
+        g.model.clear();
+        g.target_lang = "zh".into();
+        // The key never reaches this string: it is what the Settings preview shows.
+        assert_eq!(g.ws_url(), GEMINI_URL);
+        assert!(!g.ws_url().contains("key="));
+        assert_eq!(g.key(), "g");
+        assert_eq!(g.sample_rate(), 16_000);
+        assert!(g.waits_for_setup());
+
+        // Layout the live endpoint accepted (probed with a dud key, which it only rejects
+        // once the payload itself parses): transcription switches on `setup`,
+        // translationConfig under generationConfig.
+        let setup = &g.session_update()["setup"];
+        assert_eq!(setup["model"], "models/gemini-3.5-live-translate-preview");
+        let cfg = &setup["generationConfig"];
+        assert_eq!(cfg["responseModalities"], serde_json::json!(["AUDIO"]));
+        assert_eq!(cfg["translationConfig"]["targetLanguageCode"], "zh-Hans");
+        assert_eq!(cfg["translationConfig"]["echoTargetLanguage"], false);
+        assert!(setup.get("inputAudioTranscription").is_some() && setup.get("outputAudioTranscription").is_some());
+        assert!(cfg.get("inputAudioTranscription").is_none() && setup.get("translationConfig").is_none());
+        g.target_lang = "ja".into();
+        assert_eq!(g.session_update()["setup"]["generationConfig"]["translationConfig"]["targetLanguageCode"], "ja");
+
+        let audio = g.audio_frame("QQ==".into());
+        assert_eq!(audio["realtimeInput"]["audio"]["mimeType"], "audio/pcm;rate=16000");
+        assert_eq!(audio["realtimeInput"]["audio"]["data"], "QQ==");
+        assert_eq!(g.finish_frame()["realtimeInput"]["audioStreamEnd"], true);
+        // A custom URL is a proxy for the same protocol: no model= tacked on.
+        g.url = "wss://proxy.example/gemini".into();
+        assert_eq!(g.ws_url(), "wss://proxy.example/gemini");
     }
 }

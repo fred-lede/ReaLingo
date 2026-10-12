@@ -3,7 +3,7 @@ pub mod config;
 pub mod decode;
 mod history;
 mod player;
-mod realtime;
+pub mod realtime;
 pub mod pulse;
 pub mod resample;
 mod secret;
