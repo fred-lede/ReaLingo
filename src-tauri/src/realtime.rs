@@ -151,6 +151,9 @@ async fn connect_and_pump(
                         }
                     }
                     let _ = app.emit(RAW_EVENT, &value);
+                    if let Some(reason) = rejection(&value) {
+                        return Err(anyhow!(reason));
+                    }
                     for ev in text_stream.next(&value) {
                         emit(app, ev);
                     }
@@ -170,6 +173,18 @@ async fn connect_and_pump(
         let _ = write.close().await;
     }
     Ok(())
+}
+
+/// DashScope refuses a session (unknown model, bad parameter) with a bare
+/// `{"code", "message"}` frame — no `type` — and then never sends anything else. Without
+/// this the session sat silent until the idle timeout, with nothing on screen to say why.
+fn rejection(v: &Value) -> Option<String> {
+    if v.get("type").is_some() {
+        return None;
+    }
+    let code = v.get("code")?.as_str()?;
+    let message = v.get("message").and_then(Value::as_str).unwrap_or_default();
+    Some(format!("{code}: {message}"))
 }
 
 /// Pulls the PCM out of an audio delta frame and leaves its byte count behind:
@@ -543,6 +558,16 @@ mod tests {
     fn session_closed_ends_the_session_like_finished() {
         let ev = classify(&json!({ "type": "session.closed", "event_id": "e" })).unwrap();
         assert_eq!((ev.kind, ev.text.as_str()), ("status", "closed"));
+    }
+
+    /// Captured from a Tokyo workspace, which has no LiveTranslate models.
+    #[test]
+    fn a_bare_code_and_message_frame_ends_the_session() {
+        let v = json!({ "code": "InvalidParameter", "message": "Model not exist.", "request_id": "x" });
+        assert_eq!(rejection(&v).unwrap(), "InvalidParameter: Model not exist.");
+        // Typed frames, including the recoverable `error` event, are not rejections.
+        assert!(rejection(&json!({ "type": "error", "error": { "message": "busy" } })).is_none());
+        assert!(rejection(&json!({ "type": "session.created" })).is_none());
     }
 
     #[test]

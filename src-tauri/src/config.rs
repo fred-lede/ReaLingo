@@ -15,10 +15,32 @@ pub const VOICE: &str = "Tina";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+// ponytail: only the regions that serve the LiveTranslate models. Model Studio has more
+// (Frankfurt, Tokyo, Hong Kong, Virginia), but a Tokyo workspace answered "Model not exist"
+// for every realtime model, and the LiveTranslate docs list just these two. Add a variant
+// here (and in REGIONS in store.ts) once another region carries them.
 pub enum Region {
     #[default]
     Beijing,
     Singapore,
+}
+
+impl Region {
+    /// Model Studio's region id, as it appears in the workspace domain.
+    pub fn id(self) -> &'static str {
+        match self {
+            Region::Beijing => "cn-beijing",
+            Region::Singapore => "ap-southeast-1",
+        }
+    }
+
+    /// The shared DashScope domain, used when no workspace ID is set.
+    pub fn shared_host(self) -> &'static str {
+        match self {
+            Region::Beijing => "dashscope.aliyuncs.com",
+            Region::Singapore => "dashscope-intl.aliyuncs.com",
+        }
+    }
 }
 
 /// Which message format to speak — set by the protocol, not the vendor: Qwen3.8 talks a
@@ -140,11 +162,10 @@ impl Settings {
             return format!("wss://api.openai.com/v1/realtime/translations?model={model}");
         }
         let ws = self.workspace_id.trim();
-        let host = match (self.region, ws.is_empty()) {
-            (Region::Beijing, true) => "dashscope.aliyuncs.com".to_string(),
-            (Region::Beijing, false) => format!("{ws}.cn-beijing.maas.aliyuncs.com"),
-            (Region::Singapore, true) => "dashscope-intl.aliyuncs.com".to_string(),
-            (Region::Singapore, false) => format!("{ws}.ap-southeast-1.maas.aliyuncs.com"),
+        let host = if ws.is_empty() {
+            self.region.shared_host().to_string()
+        } else {
+            format!("{ws}.{}.maas.aliyuncs.com", self.region.id())
         };
         format!("wss://{host}/api-ws/v1/realtime?model={model}")
     }
@@ -264,6 +285,7 @@ mod tests {
             .ws_url()
             .starts_with("wss://llm-abc.ap-southeast-1.maas.aliyuncs.com/"));
     }
+
 
     #[test]
     fn url_carries_the_selected_model() {

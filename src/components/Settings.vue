@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, toRaw } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { activeKey, keyringOk, setActiveKey, settings, type Protocol, type Region } from "../store";
+import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region } from "../store";
 import { isRunning } from "../stream";
 import { PRESETS } from "../languages";
 import { t } from "../i18n";
@@ -88,18 +88,15 @@ const protocolPick = computed({
   set: (v: string) => pickProtocol(v as Protocol),
 });
 
-/** The console page differs per region, and the intl one is English-only. */
+/** Model Studio console pages are per region; the region id is part of the path. */
+const consoleUrl = (page: string) => `https://bailian.console.aliyun.com/${REGION_ID[settings.region]}/${page}`;
 const keyConsole = computed(() =>
-  isOpenai.value
-    ? "https://platform.openai.com/api-keys"
-    : settings.region === "singapore"
-      ? "https://bailian.console.alibabacloud.com/?tab=model#/api-key"
-      : "https://bailian.console.aliyun.com/?tab=model#/api-key"
+  isOpenai.value ? "https://platform.openai.com/api-keys" : consoleUrl("model/settings/api-key")
 );
 // The opener plugin, not an <a href>: a plain link navigates the app's own webview away.
-const openConsole = () => invoke("plugin:opener|open_url", { url: keyConsole.value });
+const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
 
-// A dropdown as well: more nodes are planned.
+// A dropdown even with two entries: more regions will come once they carry the models.
 const regionOptions = computed(() => [
   { value: "beijing", label: t("regionBJ") },
   { value: "singapore", label: t("regionSG") },
@@ -110,7 +107,7 @@ const regionPick = computed({
 });
 
 /** Starts open when something in it is already set, so a configured override is never hidden. */
-const advancedOpen = !!settings.url || (!isOpenai.value && !!settings.workspaceId);
+const advancedOpen = !!settings.url;
 </script>
 
 <template>
@@ -129,7 +126,7 @@ const advancedOpen = !!settings.url || (!isOpenai.value && !!settings.workspaceI
         <input v-model="apiKey" type="password" placeholder="sk-..." spellcheck="false" />
         <small>
           {{ keyringOk ? t("apiKeyHint") : t("apiKeyPlain") }}
-          <button class="link" @click.prevent="openConsole">
+          <button class="link" @click.prevent="openUrl(keyConsole)">
             {{ isOpenai ? t("apiKeyGetOpenai") : t("apiKeyGet") }} ↗
           </button>
         </small>
@@ -146,12 +143,32 @@ const advancedOpen = !!settings.url || (!isOpenai.value && !!settings.workspaceI
           :disabled="isRunning()"
           spellcheck="false"
         />
+        <!-- Regions carry different model lists; worth checking before blaming the app. -->
+        <small v-if="!isOpenai">
+          <button class="link" @click.prevent="openUrl(consoleUrl('model/market'))">{{ t("modelsLink") }} ↗</button>
+        </small>
       </div>
 
       <div v-if="!isOpenai" class="field">
         <span class="label">{{ t("region") }}</span>
         <Picker v-model="regionPick" :options="regionOptions" :disabled="isRunning()" />
       </div>
+
+      <label v-if="!isOpenai" class="field">
+        <span class="label">{{ t("workspace") }}</span>
+        <!-- Beijing workspace IDs start with "llm-", every other region's with "ws-". -->
+        <input
+          v-model.trim="settings.workspaceId"
+          type="text"
+          :placeholder="settings.region === 'beijing' ? 'llm-xxxxxxxx' : 'ws-xxxxxxxx'"
+          :disabled="isRunning()"
+          spellcheck="false"
+        />
+        <small>
+          {{ t("workspaceHint") }}
+          <button class="link" @click.prevent="openUrl(consoleUrl('settings/workspace'))">{{ t("workspaceManage") }} ↗</button>
+        </small>
+      </label>
     </section>
 
     <!-- Hotwords are the group's only item, so its name rides on the title line. -->
@@ -179,12 +196,6 @@ const advancedOpen = !!settings.url || (!isOpenai.value && !!settings.workspaceI
           <span class="label">{{ t("url") }}</span>
           <input v-model.trim="settings.url" type="text" placeholder="wss://..." :disabled="isRunning()" spellcheck="false" />
           <small>{{ t("urlHint") }}</small>
-        </label>
-
-        <label v-if="!isOpenai" class="field">
-          <span class="label">{{ t("workspace") }}</span>
-          <input v-model="settings.workspaceId" type="text" placeholder="llm-xxxxxxxx" spellcheck="false" />
-          <small>{{ t("workspaceHint") }}</small>
         </label>
 
         <div class="field">
@@ -246,4 +257,5 @@ textarea {
   text-underline-offset: 2px;
 }
 .link:hover { filter: brightness(1.15); }
+
 </style>

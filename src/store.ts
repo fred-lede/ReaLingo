@@ -3,7 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { MODEL_QWEN3_5, MODEL_QWEN3_8 } from "./languages";
 
+/** Only the regions that serve the LiveTranslate models — see `config::Region` in Rust. */
 export type Region = "beijing" | "singapore";
+
+/** Model Studio's region id: part of every console link. */
+export const REGION_ID: Record<Region, string> = { beijing: "cn-beijing", singapore: "ap-southeast-1" };
 export type Theme = "system" | "light" | "dark";
 export type SubMode = "both" | "target" | "source";
 export type SubAlign = "left" | "center" | "right";
