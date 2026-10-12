@@ -9,8 +9,44 @@ export const HOME = "https://nosugark.github.io/ReaLingo/";
 
 export type CheckState = "idle" | "checking" | "latest" | "found" | "failed";
 
-/** Shared by the title bar and the About sheet — one check, one answer, one place. */
-export const check = ref<{ state: CheckState; tag?: string }>({ state: "idle" });
+/**
+ * Shared by the title bar and the About sheet — one check, one answer, one place. `body` is
+ * that release's full text; the About sheet picks the news out of it with `whatsNew`.
+ */
+export const check = ref<{ state: CheckState; tag?: string; body?: string }>({ state: "idle" });
+
+/**
+ * The news in a release body, in the UI language where the body offers one.
+ *
+ * Release bodies are `.github/release-notes/<tag>.md` followed by GitHub's generated
+ * changelog. A bilingual notes file marks its halves with HTML comments, which GitHub's page
+ * hides, so both languages show there while the app takes just one:
+ *
+ *     <!-- zh -->
+ *     ## 新增
+ *     - …
+ *     <!-- en -->
+ *     ## New
+ *     - …
+ *
+ * Within the chosen part (or the whole body, for older single-language notes) the news ends
+ * at the standing sections — feature list, install steps — or at the generated changelog.
+ */
+export function whatsNew(body: string, locale: "zh" | "en"): string {
+  let lines = body.replace(/\r\n/g, "\n").split("\n");
+  const marker = (l: string) => /^<!--\s*(zh|en)\s*-->$/.exec(l.trim())?.[1];
+  const start = lines.findIndex((l) => marker(l) === locale);
+  if (start >= 0) {
+    const rest = lines.slice(start + 1);
+    const next = rest.findIndex((l) => marker(l) !== undefined);
+    lines = next < 0 ? rest : rest.slice(0, next);
+  }
+  // `(\s|$)`, not `\b`: to a JS regex CJK characters are not word characters, so "\b" after
+  // "功能一览" never matched and the whole install guide came along.
+  const stop = /^(## (功能一览|安装与打开|Features|Install|What's Changed|New Contributors)(\s|$)|\*\*Full Changelog\*\*)/;
+  const end = lines.findIndex((l) => stop.test(l.trim()));
+  return (end < 0 ? lines : lines.slice(0, end)).join("\n").trim();
+}
 
 /** "1.2.10" > "1.2.9": compare numerically per segment, not as strings. */
 export function isNewer(tag: string, current: string) {
@@ -36,9 +72,11 @@ export async function checkUpdate() {
       headers: { Accept: "application/vnd.github+json" },
     });
     if (!r.ok) throw new Error(String(r.status));
-    const tag = (await r.json()).tag_name as string;
+    const release = await r.json();
+    const tag = release.tag_name as string;
+    const body = (release.body as string) ?? "";
     const current = await getVersion();
-    check.value = isNewer(tag, current) ? { state: "found", tag } : { state: "latest", tag };
+    check.value = { state: isNewer(tag, current) ? "found" : "latest", tag, body };
   } catch {
     check.value = { state: "failed" };
   }
