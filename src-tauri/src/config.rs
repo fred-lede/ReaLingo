@@ -114,6 +114,24 @@ fn en() -> String {
     "en".into()
 }
 
+/// Adds `name=value` to a URL's query unless that exact parameter is already there (so
+/// `submodel=` does not count as `model=`), keeping any `#fragment` at the end.
+pub fn with_param(url: &str, name: &str, value: &str) -> String {
+    let (base, fragment) = url.split_once('#').unwrap_or((url, ""));
+    let query = base.split_once('?').map_or("", |(_, q)| q);
+    if query.split('&').any(|pair| pair.split('=').next() == Some(name)) {
+        return url.to_string();
+    }
+    let sep = match base.split_once('?') {
+        None => "?",
+        Some((_, "")) => "",
+        Some(_) if base.ends_with('&') => "",
+        Some(_) => "&",
+    };
+    let fragment = if fragment.is_empty() { String::new() } else { format!("#{fragment}") };
+    format!("{base}{sep}{name}={value}{fragment}")
+}
+
 impl Settings {
     pub fn key(&self) -> &str {
         match self.protocol {
@@ -215,11 +233,10 @@ impl Settings {
         let model = self.model();
         let custom = self.url.trim();
         if !custom.is_empty() {
-            if self.protocol == Protocol::Gemini || custom.contains("model=") {
-                return custom.to_string();
-            }
-            let sep = if custom.contains('?') { '&' } else { '?' };
-            return format!("{custom}{sep}model={model}");
+            return match self.protocol {
+                Protocol::Gemini => custom.to_string(),
+                _ => with_param(custom, "model", model),
+            };
         }
         match self.protocol {
             Protocol::Openai => return format!("wss://api.openai.com/v1/realtime/translations?model={model}"),
@@ -249,7 +266,8 @@ impl Settings {
             // is always detected; there is no source-language setting to send.
             return serde_json::json!({
                 "setup": {
-                    "model": format!("models/{}", self.model()),
+                    // Accept the ID with or without the "models/" prefix the API itself uses.
+                    "model": format!("models/{}", self.model().trim_start_matches("models/")),
                     "generationConfig": {
                         "responseModalities": ["AUDIO"],
                         "translationConfig": { "targetLanguageCode": self.target_code(), "echoTargetLanguage": false }
@@ -337,7 +355,8 @@ impl Settings {
 mod tests {
     use super::*;
 
-    fn s(region: Region, workspace_id: &str) -> Settings {
+    /// Qwen3.5 settings with a key for every vendor, so each test only changes what it is about.
+    fn qwen(region: Region, workspace_id: &str) -> Settings {
         Settings {
             protocol: Protocol::Qwen35,
             api_key: "k".into(),
@@ -357,18 +376,18 @@ mod tests {
 
     #[test]
     fn url_falls_back_to_public_domain_without_workspace() {
-        assert!(s(Region::Beijing, "  ").ws_url().starts_with("wss://dashscope.aliyuncs.com/"));
-        assert!(s(Region::Singapore, "")
+        assert!(qwen(Region::Beijing, "  ").ws_url().starts_with("wss://dashscope.aliyuncs.com/"));
+        assert!(qwen(Region::Singapore, "")
             .ws_url()
             .starts_with("wss://dashscope-intl.aliyuncs.com/"));
     }
 
     #[test]
     fn url_uses_dedicated_domain_with_workspace() {
-        assert!(s(Region::Beijing, "llm-abc")
+        assert!(qwen(Region::Beijing, "llm-abc")
             .ws_url()
             .starts_with("wss://llm-abc.cn-beijing.maas.aliyuncs.com/"));
-        assert!(s(Region::Singapore, "llm-abc")
+        assert!(qwen(Region::Singapore, "llm-abc")
             .ws_url()
             .starts_with("wss://llm-abc.ap-southeast-1.maas.aliyuncs.com/"));
     }
@@ -376,16 +395,16 @@ mod tests {
 
     #[test]
     fn url_carries_the_selected_model() {
-        assert!(s(Region::Beijing, "").ws_url().ends_with(&format!("?model={MODEL_QWEN3_5}")));
+        assert!(qwen(Region::Beijing, "").ws_url().ends_with(&format!("?model={MODEL_QWEN3_5}")));
 
-        let mut qwen3 = s(Region::Beijing, "");
+        let mut qwen3 = qwen(Region::Beijing, "");
         qwen3.model = MODEL_QWEN3.into();
         assert!(qwen3.ws_url().ends_with(&format!("?model={MODEL_QWEN3}")));
     }
 
     #[test]
     fn empty_model_falls_back_to_qwen3_5() {
-        let mut blank = s(Region::Beijing, "");
+        let mut blank = qwen(Region::Beijing, "");
         blank.model = String::new();
         assert!(blank.ws_url().ends_with(&format!("?model={MODEL_QWEN3_5}")));
     }
@@ -401,21 +420,21 @@ mod tests {
 
     #[test]
     fn turn_detection_is_configured_not_empty() {
-        let vad = &s(Region::Beijing, "").session_update()["session"]["turn_detection"];
+        let vad = &qwen(Region::Beijing, "").session_update()["session"]["turn_detection"];
         assert_eq!(vad["type"], "server_vad");
         assert!(vad["silence_duration_ms"].as_u64().unwrap() > 0);
     }
 
     #[test]
     fn no_hotwords_omits_corpus() {
-        let translation = &s(Region::Beijing, "").session_update()["session"]["translation"];
+        let translation = &qwen(Region::Beijing, "").session_update()["session"]["translation"];
         assert_eq!(translation["language"], "en");
         assert!(translation.get("corpus").is_none());
     }
 
     #[test]
     fn hotwords_go_under_translation_corpus_phrases() {
-        let mut with = s(Region::Beijing, "");
+        let mut with = qwen(Region::Beijing, "");
         with.hotwords.insert("人工智能".into(), "Artificial Intelligence".into());
         let phrases = &with.session_update()["session"]["translation"]["corpus"]["phrases"];
         assert_eq!(phrases["人工智能"], "Artificial Intelligence");
@@ -423,11 +442,11 @@ mod tests {
 
     #[test]
     fn speaking_adds_the_audio_modality_and_voice() {
-        let quiet = s(Region::Beijing, "").session_update();
+        let quiet = qwen(Region::Beijing, "").session_update();
         assert_eq!(quiet["session"]["modalities"], serde_json::json!(["text"]));
         assert!(quiet["session"].get("voice").is_none());
 
-        let mut loud = s(Region::Beijing, "");
+        let mut loud = qwen(Region::Beijing, "");
         loud.speak = true;
         loud.voice = "Ethan".into();
         let session = &loud.session_update()["session"];
@@ -438,17 +457,17 @@ mod tests {
 
     #[test]
     fn auto_source_omits_language_field() {
-        let v = s(Region::Beijing, "").session_update();
+        let v = qwen(Region::Beijing, "").session_update();
         assert!(v["session"]["input_audio_transcription"].get("language").is_none());
 
-        let mut fixed = s(Region::Beijing, "");
+        let mut fixed = qwen(Region::Beijing, "");
         fixed.source_lang = "zh".into();
         assert_eq!(fixed.session_update()["session"]["input_audio_transcription"]["language"], "zh");
     }
 
     #[test]
     fn qwen3_8_uses_its_own_session_schema_and_endpoint_model() {
-        let mut settings = s(Region::Beijing, "llm-abc");
+        let mut settings = qwen(Region::Beijing, "llm-abc");
         settings.protocol = Protocol::Qwen38;
         settings.model.clear();
         settings.voice = "Chelsie".into();
@@ -476,12 +495,12 @@ mod tests {
     #[test]
     fn the_schema_follows_the_protocol_not_the_model_name() {
         // A renamed 3.8 deployment still needs the 3.8 schema...
-        let mut renamed = s(Region::Beijing, "");
+        let mut renamed = qwen(Region::Beijing, "");
         renamed.protocol = Protocol::Qwen38;
         renamed.model = "my-qwen38-deploy".into();
         assert!(renamed.session_update()["session"].get("output_modalities").is_some());
         // ...and the 3.8 model name alone no longer switches a 3.5 session over.
-        let mut named = s(Region::Beijing, "");
+        let mut named = qwen(Region::Beijing, "");
         named.model = MODEL_QWEN3_8.into();
         assert!(named.session_update()["session"].get("input_audio_transcription").is_some());
         assert_eq!(renamed.key(), named.key());
@@ -489,7 +508,7 @@ mod tests {
 
     #[test]
     fn openai_speaks_its_own_protocol() {
-        let mut o = s(Region::Singapore, "llm-abc");
+        let mut o = qwen(Region::Singapore, "llm-abc");
         o.protocol = Protocol::Openai;
         o.model.clear();
         o.target_lang = "zh".into();
@@ -505,7 +524,7 @@ mod tests {
 
     #[test]
     fn custom_url_is_dialled_as_is_plus_model() {
-        let mut c = s(Region::Beijing, "");
+        let mut c = qwen(Region::Beijing, "");
         c.url = " wss://proxy.example/v1/rt ".into();
         assert_eq!(c.ws_url(), format!("wss://proxy.example/v1/rt?model={MODEL_QWEN3_5}"));
         c.url = "wss://proxy.example/rt?x=1".into();
@@ -518,8 +537,31 @@ mod tests {
     }
 
     #[test]
+    fn params_are_matched_by_name_and_go_before_the_fragment() {
+        // A parameter that merely ends in "model" is not one.
+        assert_eq!(with_param("wss://h/rt?submodel=x", "model", "m"), "wss://h/rt?submodel=x&model=m");
+        assert_eq!(with_param("wss://h/rt?a=1&model=mine", "model", "m"), "wss://h/rt?a=1&model=mine");
+        assert_eq!(with_param("wss://h/rt#frag", "model", "m"), "wss://h/rt?model=m#frag");
+        assert_eq!(with_param("wss://h/rt?a=1#frag", "key", "k"), "wss://h/rt?a=1&key=k#frag");
+        assert_eq!(with_param("wss://h/rt?", "key", "k"), "wss://h/rt?key=k");
+        assert_eq!(with_param("wss://h/rt?a=1&", "key", "k"), "wss://h/rt?a=1&key=k");
+        // A Gemini proxy URL that already carries its own key keeps it, rather than gaining two.
+        assert_eq!(with_param("wss://h/rt?key=mine", "key", "k"), "wss://h/rt?key=mine");
+    }
+
+    #[test]
+    fn a_gemini_model_id_may_carry_the_models_prefix() {
+        let mut g = qwen(Region::Beijing, "");
+        g.protocol = Protocol::Gemini;
+        g.model = "models/gemini-x".into();
+        assert_eq!(g.session_update()["setup"]["model"], "models/gemini-x");
+        g.model = "gemini-x".into();
+        assert_eq!(g.session_update()["setup"]["model"], "models/gemini-x");
+    }
+
+    #[test]
     fn gemini_sets_up_translation_in_its_own_message() {
-        let mut g = s(Region::Beijing, "llm-abc");
+        let mut g = qwen(Region::Beijing, "llm-abc");
         g.protocol = Protocol::Gemini;
         g.model.clear();
         g.target_lang = "zh".into();

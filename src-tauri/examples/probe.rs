@@ -28,11 +28,9 @@ async fn main() -> anyhow::Result<()> {
     settings.api_key = env("DASHSCOPE_API_KEY");
     settings.openai_key = env("OPENAI_API_KEY");
     settings.gemini_key = env("GEMINI_API_KEY");
-    settings.protocol = match env("PROBE_PROTOCOL").as_str() {
-        "qwen35" => Protocol::Qwen35,
-        "qwen38" => Protocol::Qwen38,
-        "openai" => Protocol::Openai,
-        "gemini" => Protocol::Gemini,
+    settings.protocol = match env("PROBE_PROTOCOL") {
+        // The same names the app stores, parsed by the same serde derive.
+        name if !name.is_empty() => serde_json::from_value(serde_json::json!(name))?,
         _ if !settings.gemini_key.is_empty() => Protocol::Gemini,
         _ if !settings.openai_key.is_empty() => Protocol::Openai,
         _ => Protocol::Qwen35,

@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::config::{Protocol, Settings};
+use crate::config::{with_param, Protocol, Settings};
 use crate::player::Player;
 use crate::resample::chunk_samples;
 
@@ -220,10 +220,8 @@ pub fn client_request(settings: &Settings) -> Result<Request> {
     let key = settings.key().trim();
     if settings.protocol == Protocol::Gemini {
         // The Live API takes the key as a query parameter. Added here, never in `ws_url`,
-        // which the Settings sheet displays.
-        let url = settings.ws_url();
-        let sep = if url.contains('?') { '&' } else { '?' };
-        return Ok(format!("{url}{sep}key={key}").into_client_request()?);
+        // which the Settings sheet displays; a custom URL that already carries one keeps it.
+        return Ok(with_param(&settings.ws_url(), "key", key).into_client_request()?);
     }
     let mut request = settings.ws_url().into_client_request()?;
     request.headers_mut().insert("Authorization", HeaderValue::from_str(&format!("Bearer {key}"))?);
