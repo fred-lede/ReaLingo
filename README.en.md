@@ -2,7 +2,7 @@
   <img src="brand/banner.png" width="380" alt="ReaLingo" />
 </p>
 
-<p align="center"><b>Realtime speech translation</b> — a desktop simultaneous interpreter built on Qwen3.5-LiveTranslate</p>
+<p align="center"><b>Realtime speech translation</b> — a desktop simultaneous interpreter for Alibaba Cloud Qwen, OpenAI and Google Gemini</p>
 
 <p align="center">
   <a href="https://github.com/noSugarK/ReaLingo/actions/workflows/build.yml"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/noSugarK/ReaLingo/build.yml?style=flat-square&label=build" /></a>
@@ -38,10 +38,15 @@ reopen the app and grant it again — the ad-hoc signature differs per version, 
 
 - **Three audio sources**: microphone / system audio / a local audio file
   (Windows, macOS and Ubuntu can all capture system audio directly)
-- **60 languages**, with automatic source detection; switchable to the older Qwen3 model (18 languages)
-- **Read the translation aloud**: switch it on in the language card and pick one of 47 voices; the model
-  synthesizes the speech itself, no separate TTS. Only 29 target languages have audio output; for the rest
-  the switch is greyed out. When capturing system audio, Windows and macOS leave ReaLingo's own speech out
+- **Four APIs to choose from**: Alibaba Cloud Model Studio Qwen3.5 / Qwen3 (60 / 18 languages), Qwen3.8
+  (60), OpenAI `gpt-realtime-translate` (13 output languages) and Google Gemini Live Translate (54).
+  Model and endpoint are both editable, so any service speaking the same API (a proxy, a private
+  deployment) works too; each vendor's API key is stored separately
+- **Automatic source-language detection** (Qwen3.5 also lets you pick the source)
+- **Read the translation aloud**: switch it on in the language card; the model synthesizes the speech itself,
+  no separate TTS. Qwen offers 47 voices and speaks 29 target languages (for the rest the switch is greyed
+  out); OpenAI and Gemini speak every target language they offer, in a voice they choose themselves.
+  When capturing system audio, Windows and macOS leave ReaLingo's own speech out
   of the capture so it is not recorded and translated again (see Platform support); with a microphone,
   speech from your speakers will be picked up, so use headphones
 - **Standalone subtitle overlay**: always on top, bilingual / translation only / source only,
@@ -60,21 +65,27 @@ reopen the app and grant it again — the ad-hoc signature differs per version, 
 - **History**: off by default. Flip the switch above the stream and the run is saved to its
   own file; browse, search, export and delete past runs from the History panel. One JSONL
   file per run under `app-data/history/`, appended as you go
+- **About panel**: click the logo in the title bar for the version, an update check against the latest
+  GitHub release, that release's new features and fixes (in the interface language), and repo links.
+  The model name under the logo opens Settings
 - Built-in `rt://raw` event inspector (the `< >` button in the title bar) for protocol debugging
 
 ## Configuration
 
-Open the gear icon in the top-right after first launch:
+Open the gear icon in the top-right after first launch (or click the model name under the logo).
+Settings come in three groups — Connection, Translation, Advanced:
 
 | Setting | Notes |
 |---|---|
-| API Key | [Model Studio console → API-KEY](https://bailian.console.alibabacloud.com/?tab=model#/api-key) (China regions: [bailian.console.aliyun.com](https://bailian.console.aliyun.com/?tab=model#/api-key)); the settings page has a direct link too. Kept in the OS credential store — see below |
-| Model | `qwen3.5-livetranslate-flash-realtime` (60 languages, default), `qwen3.8-livetranslate-flash-realtime` (60, source language always auto-detected) or `qwen3-livetranslate-flash-realtime` (18). Switching to the older model narrows the language pickers to what it supports, and a language it cannot handle falls back automatically |
-| Hotwords | **Optional.** One `source=translation` per line, so proper nouns come out the way you want them (`人工智能=Artificial Intelligence`). Up to 1000; sent with the session, so edits apply the next time you start |
-| Region | China (Beijing) / Singapore |
-| Workspace ID | **Optional.** Leave blank for the shared endpoint `dashscope[-intl].aliyuncs.com`; filling it in uses your workspace's dedicated domain `{id}.cn-beijing.maas.aliyuncs.com` (better performance). Find it on the workspace detail page |
+| API | Which message format to speak: **Qwen3.5 / 3**, **Qwen3.8** (Alibaba Cloud Model Studio), **OpenAI**, **Gemini Live Translate** (Google). Both Qwen APIs share the Model Studio key. Switching remembers each API's model and each vendor's custom URL |
+| API Key | One per vendor, kept in the OS credential store — see below. Get one from the [Model Studio console](https://bailian.console.aliyun.com/ap-southeast-1/model/settings/api-key) (the link follows the region), [OpenAI](https://platform.openai.com/api-keys) or [Google AI Studio](https://aistudio.google.com/apikey); the settings page links to each |
+| Model | Pick a preset or "Custom…" for any model ID. Presets: Qwen3.5 (60 languages, default), Qwen3 (18), Qwen3.8 (60), `gpt-realtime-translate` (13 output languages), `gemini-3.5-live-translate-preview` (54). The language pickers list only what the current model supports, and a language it cannot handle falls back automatically |
+| Region | Qwen only. China (Beijing) / Singapore — the only regions serving the LiveTranslate models today |
+| Workspace ID | Qwen only, **optional.** Leave blank for the shared endpoint `dashscope[-intl].aliyuncs.com`; filling it in uses your workspace's dedicated domain `{id}.{region}.maas.aliyuncs.com`. Beijing IDs look like `llm-…`, Singapore ones like `ws-…` |
+| Hotwords | Qwen only, **optional.** One `source=translation` per line, so proper nouns come out the way you want them (`人工智能=Artificial Intelligence`). Up to 1000; sent with the session, so edits apply the next time you start |
+| Custom URL | Under Advanced, **optional.** Blank uses the API's default endpoint; otherwise it is dialled as typed — Qwen / OpenAI get `model=` added if missing, Gemini's is used as-is (its model goes in the session setup) |
 
-The settings panel shows the exact WebSocket endpoint it will dial, live.
+Advanced also shows the exact WebSocket endpoint it will dial, live (never with a Gemini key in it).
 
 **Where the API key lives**: in the OS credential store — Windows Credential Manager (DPAPI),
 macOS Keychain, Linux Secret Service. The OS derives the encryption key from your login, so no
@@ -109,7 +120,7 @@ it talks to the sound server directly (`src-tauri/src/pulse.rs`):
 
 - `pactl list sources` lists every source; the ones carrying `Monitor of Sink` go straight
   into the device picker
-- `parec` records one and writes raw PCM to stdout. Asking it for s16le/16000/mono has the
+- `parec` records one and writes raw PCM to stdout. Asking it for s16le, mono, at the current API's rate (16k or 24k) has the
   sound server do the downmix and resampling, so samples land in the exact shape the uplink
   wants and skip our own pipeline
 
@@ -221,7 +232,7 @@ Packaging locally:
 npm run tauri build
 ```
 
-Tests (resampling and endpoint construction):
+Tests (resampling, endpoint construction, per-API message shapes and subtitle segmentation):
 
 ```bash
 cd src-tauri && cargo test
@@ -280,16 +291,25 @@ that cannot animate it shows frame one — the static logo.
 
 ```
 microphone ──┐
-system audio ┤→ downmix to mono → windowed-sinc resample to 16 kHz → i16 → 100 ms chunks ─┐
-audio file ──┘   (cpal / symphonia)                                                       │
-                                                                                          ▼
-                front end ←── rt://event ── event parsing ←── WebSocket ←── base64 + append
+system audio ┤→ downmix to mono → windowed-sinc resample to 16/24 kHz → i16 → 100 ms chunks ─┐
+audio file ──┘   (cpal / symphonia)                                                           │
+                                                                                              ▼
+                front end ←── rt://event ── event parsing ←── WebSocket ←── base64 + the API's audio frame
                   (Vue)                      (realtime.rs)
 ```
 
-- **The WebSocket lives in Rust**: the endpoint authenticates with an `Authorization` request
-  header, and the browser `WebSocket` constructor cannot set headers. Keeping the API key out of
-  the webview is a welcome side effect.
+- **The WebSocket lives in Rust**: the Model Studio and OpenAI endpoints authenticate with an
+  `Authorization` request header, and the browser `WebSocket` constructor cannot set headers.
+  Keeping the API key out of the webview is a welcome side effect.
+- **Per-API differences** live in `src-tauri/src/config.rs`: uplink sample rate (OpenAI 24 kHz, the
+  rest 16 kHz), the audio and end-of-input frames, the session setup, and what counts as done.
+  Gemini takes its key as a URL parameter, added only at connect time and never shown in Settings.
+- **Pairing subtitles**: Qwen pairs source and translation by the server's turn ids; OpenAI and
+  Gemini send only two append-only text streams, cut into turns at sentence ends, with the source
+  split at its own last sentence end and the remainder carried into the next row.
+- **Finishing a Gemini session**: it never says it is done and keeps streaming silent audio after
+  the input ends, so stopping first sends ~3 s of silence (or the last clause never arrives), then
+  ends once 4 s pass with neither new text nor non-silent audio.
 - **System audio** is the same call on all three platforms — an input stream on an *output*
   device — with each backend doing something different: Windows adds
   `AUDCLNT_STREAMFLAGS_LOOPBACK`, macOS creates a Core Audio process tap, Linux has no

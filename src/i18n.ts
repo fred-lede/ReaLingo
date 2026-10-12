@@ -92,7 +92,7 @@ const zh = {
 
   settings: "设置",
   about: "关于",
-  aboutTagline: "基于阿里云百炼 Qwen3.5-LiveTranslate 的桌面实时语音翻译",
+  aboutTagline: "桌面实时语音翻译，支持阿里云百炼 Qwen、OpenAI、Google Gemini",
   aboutRepo: "仓库",
   aboutAuthor: "作者",
   aboutIssues: "反馈",
@@ -241,7 +241,7 @@ const en: typeof zh = {
 
   settings: "Settings",
   about: "About",
-  aboutTagline: "Desktop live speech translation, powered by Qwen3.5-LiveTranslate on Alibaba Cloud Model Studio",
+  aboutTagline: "Desktop live speech translation with Alibaba Cloud Qwen, OpenAI and Google Gemini",
   aboutRepo: "Repository",
   aboutAuthor: "Author",
   aboutIssues: "Feedback",

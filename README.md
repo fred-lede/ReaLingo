@@ -2,7 +2,7 @@
   <img src="brand/banner.png" width="380" alt="ReaLingo" />
 </p>
 
-<p align="center"><b>实时语音翻译</b> — 基于阿里云百炼 Qwen3.5-LiveTranslate 的桌面同声传译工具</p>
+<p align="center"><b>实时语音翻译</b> — 支持阿里云百炼 Qwen、OpenAI、Google Gemini 的桌面同声传译工具</p>
 
 <p align="center">
   <a href="https://github.com/noSugarK/ReaLingo/actions/workflows/build.yml"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/noSugarK/ReaLingo/build.yml?style=flat-square&label=build" /></a>
@@ -35,9 +35,13 @@ macOS 升级后系统声音没反应：到 **系统设置 → 隐私与安全性
 ## 功能
 
 - **三种音频来源**：麦克风 / 系统声音 / 本地音频文件（Windows、macOS、Ubuntu 三平台都能直接采系统声音）
-- **60 种语言互译**，源语言可自动检测；可切换到旧模型 Qwen3（18 语种）
-- **朗读译文**：语言卡片里打开，47 种音色可选，由模型直接合成，不另接 TTS。只有 29 种目标语言有语音输出，
-  其余只能出文字，开关会变灰。录系统声音时，Windows 和 macOS 会把 ReaLingo 自己的朗读排除在采集之外，
+- **四种接口可选**：阿里云百炼 Qwen3.5 / Qwen3（60 / 18 语种）、Qwen3.8（60 语种）、
+  OpenAI `gpt-realtime-translate`（输出 13 种语言）、Google Gemini Live Translate（54 种语言）。
+  模型和接入地址都能自己改，兼容同一接口的服务（代理、私有部署）也能接；各家的 API Key 分开保存
+- **源语言可自动检测**（Qwen3.5 也可以手动指定）
+- **朗读译文**：语言卡片里打开，由模型直接合成，不另接 TTS。Qwen 有 47 种音色可选，29 种目标语言有语音输出，
+  其余只能出文字，开关会变灰；OpenAI 和 Gemini 所有目标语言都能朗读，音色由服务端决定。
+  录系统声音时，Windows 和 macOS 会把 ReaLingo 自己的朗读排除在采集之外，
   不会被录回去再翻一遍（见「平台支持」）；用麦克风时扬声器的声音会被收回去，请戴耳机
 - **独立字幕窗**：默认置顶，双语 / 仅译文 / 仅原文，背景不透明度、字号、字体颜色、描边、
   对齐方式（左 / 中 / 右）可调；长句可选「自动加高」（换行，窗口跟着文字长高，底边不动）
@@ -52,22 +56,25 @@ macOS 升级后系统声音没反应：到 **系统设置 → 隐私与安全性
 - **翻译历史**：默认不记录；翻译流右上角的开关打开后，这一场存成一个文件，
   在旁边的「翻译历史」里按场次翻看、搜索、导出、删除。存在 `app-data/history/` 下，
   一场一个 JSONL，追加写，进程被杀最多丢最后一句
-- **关于面板**：点标题栏左上角 logo 打开，显示版本、检查更新（比对 GitHub 最新 release）、仓库与作者链接
+- **关于面板**：点标题栏左上角 logo 打开，显示版本、检查更新（比对 GitHub 最新 release）、
+  该版本的新增与修复（按界面语言显示），以及仓库与作者链接。标题栏 logo 下方显示当前模型，点它直达设置
 - 内置 `rt://raw` 事件查看器（标题栏 `< >` 按钮），用于排查协议字段
 
 ## 配置
 
-首次启动后点右上角齿轮：
+首次启动后点右上角齿轮（或标题栏 logo 下方的模型名）。设置分「连接 / 翻译 / 高级」三组：
 
 | 项 | 说明 |
 |---|---|
-| API Key | [百炼控制台 → API-KEY](https://bailian.console.aliyun.com/?tab=model#/api-key)（新加坡地域用 [国际站控制台](https://bailian.console.alibabacloud.com/?tab=model#/api-key)），设置页里有直达按钮。存在系统凭据库里，见下 |
-| 翻译模型 | `qwen3.5-livetranslate-flash-realtime`（60 语种，默认）、`qwen3.8-livetranslate-flash-realtime`（60 语种，自动识别源语种）或 `qwen3-livetranslate-flash-realtime`（18 语种）。切到旧模型后语言选择器只列它支持的 18 种，当前选择不在其中会自动回退 |
-| 热词 | **选填**。每行一条「源词=译文」，让模型按你的说法翻专有名词（`人工智能=Artificial Intelligence`）。最多 1000 条，随会话下发，翻译进行中改动要重新开始才生效 |
-| 地域 | 华北2（北京）/ 新加坡 |
-| 业务空间 ID | **选填**。留空走公共域名 `dashscope[-intl].aliyuncs.com`；填写后走业务空间专属域名 `{id}.cn-beijing.maas.aliyuncs.com`（性能更好），在百炼控制台业务空间详情页查看 |
+| 接口 | 决定按哪种消息格式通信：**Qwen3.5 / 3**、**Qwen3.8**（阿里云百炼）、**OpenAI**、**Gemini Live Translate**（Google）。两个 Qwen 接口共用百炼的 Key。切换时每个接口记住自己的模型、每家记住自己的自定义地址 |
+| API Key | 每家一个，存在系统凭据库里（见下）。获取：[百炼控制台](https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key)（链接随地域切换）、[OpenAI](https://platform.openai.com/api-keys)、[Google AI Studio](https://aistudio.google.com/apikey)，设置页里都有直达链接 |
+| 翻译模型 | 下拉选预设，或选「自定义…」填任意模型 ID。预设：Qwen3.5（60 语种，默认）、Qwen3（18 语种）、Qwen3.8（60 语种）、`gpt-realtime-translate`（输出 13 种语言）、`gemini-3.5-live-translate-preview`（54 种语言）。语言选择器只列当前模型支持的语言，当前选择不在其中会自动回退 |
+| 地域 | 仅 Qwen。华北2（北京）/ 新加坡 —— 目前只有这两个地域提供 LiveTranslate 模型 |
+| 业务空间 ID | 仅 Qwen，**选填**。留空走公共域名 `dashscope[-intl].aliyuncs.com`；填写后走业务空间专属域名 `{id}.{地域}.maas.aliyuncs.com`。北京的 ID 形如 `llm-…`，新加坡形如 `ws-…` |
+| 热词 | 仅 Qwen，**选填**。每行一条「源词=译文」，让模型按你的说法翻专有名词（`人工智能=Artificial Intelligence`）。最多 1000 条，随会话下发，翻译进行中改动要重新开始才生效 |
+| 自定义地址 | 「高级」里，**选填**。留空用该接口的默认地址；填写后按原样连接，Qwen / OpenAI 没带 `model` 参数时自动补上，Gemini 原样使用（模型写在会话配置里） |
 
-设置页底部实时显示最终会连接的 WebSocket 地址。
+「高级」里同时实时显示最终会连接的 WebSocket 地址（Gemini 的 Key 不会出现在这里）。
 
 **API Key 存哪儿**：交给操作系统的凭据库 —— Windows 凭据管理器（DPAPI）、macOS 钥匙串、
 Linux Secret Service，密钥由 OS 从你的登录凭据派生，磁盘上不存在可读形式；`settings.json`
@@ -98,7 +105,7 @@ monitor 正是「录下这个输出在放什么」的设备，pavucontrol 里能
 不走 cpal，而是直接跟声音服务器说话（`src-tauri/src/pulse.rs`）：
 
 - `pactl list sources` 列出全部源，带 `Monitor of Sink` 的就是 monitor，直接进设备下拉框
-- `parec` 录其中一个，raw PCM 走 stdout。直接问它要 s16le/16000/mono，降混和重采样由声音
+- `parec` 录其中一个，raw PCM 走 stdout。直接问它要 s16le / 单声道 / 当前接口要的采样率（16k 或 24k），降混和重采样由声音
   服务器做完，样本到手就是上行要的形状，跳过我们自己那套管线
 
 这俩工具说的是 PulseAudio 协议，PipeWire 也提供（`pipewire-pulse`），一条路覆盖两个声音服务器。
@@ -220,7 +227,7 @@ sudo apt install ./ReaLingo_0.2.1_amd64.deb   # 用 apt 而不是 dpkg -i，才�
 npm run tauri build
 ```
 
-测试（重采样与地址拼接）：
+测试（重采样、地址拼接、各接口的消息格式与字幕切分）：
 
 ```bash
 cd src-tauri && cargo test
@@ -271,15 +278,22 @@ GIF 只有 256 色，渐变字会断层，且 1-bit 透明会在深色底上留�
 
 ```
 麦克风 ──┐
-系统声音 ─┤→ 降混单声道 → 窗化 sinc 重采样 16kHz → i16 → 100ms 分块 ─┐
-音频文件 ─┘   (cpal / symphonia)                                    │
-                                                                    ▼
-              前端 ←── rt://event ── 事件解析 ←── WebSocket ←── base64 + append
+系统声音 ─┤→ 降混单声道 → 窗化 sinc 重采样 16/24kHz → i16 → 100ms 分块 ─┐
+音频文件 ─┘   (cpal / symphonia)                                        │
+                                                                        ▼
+              前端 ←── rt://event ── 事件解析 ←── WebSocket ←── base64 + 各接口的音频帧
              (Vue)                   (realtime.rs)
 ```
 
-- **WebSocket 放在 Rust 侧**：百炼实时接口用 `Authorization` 请求头鉴权，浏览器
+- **WebSocket 放在 Rust 侧**：百炼和 OpenAI 的实时接口用 `Authorization` 请求头鉴权，浏览器
   `WebSocket` 构造函数无法设置请求头。附带好处是 API Key 不进 webview。
+- **各接口的差异**集中在 `src-tauri/src/config.rs`：上行采样率（OpenAI 24kHz，其余 16kHz）、
+  音频帧与结束帧的格式、会话配置、怎样算结束。Gemini 的 Key 走 URL 参数而不是请求头，
+  且只在连接时拼上，不出现在设置页的地址预览里。
+- **字幕配对**：Qwen 按服务端的轮次 id 配对原文和译文；OpenAI 和 Gemini 只给两条增量文字流，
+  按句末标点切出轮次，原文在自己最后一个句末处切开，余下的带进下一行。
+- **Gemini 的收尾**：它不发结束信号，停止后还会一直推静音帧，所以停止时先补约 3 秒静音
+  （不然最后半句出不来），之后连续 4 秒没有新文字、也没有非静音音频就结束会话。
 - **系统声音**：三个平台都是「对输出设备建 input stream」这一个调用，后端各自处理 ——
   Windows 加 `AUDCLNT_STREAMFLAGS_LOOPBACK`，macOS 建 Core Audio process tap，
   Linux 没有对应机制（细节见 `src-tauri/src/audio.rs` 的模块注释）。

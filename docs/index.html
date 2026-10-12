@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ReaLingo — 桌面实时同传</title>
-<meta name="description" content="基于 Qwen3.5-LiveTranslate 的桌面同声传译：60 种语言互译，译文浮在任何窗口上，0.5 起还能朗读。Windows / macOS / Linux，开源免费。" />
+<meta name="description" content="桌面同声传译，支持阿里云百炼 Qwen、OpenAI、Google Gemini：最多 60 种语言互译，译文浮在任何窗口上，还能朗读。Windows / macOS / Linux，开源免费。" />
 <link rel="icon" href="mark.png" />
 <meta property="og:title" content="ReaLingo — 桌面实时同传" />
-<meta property="og:description" content="60 种语言互译，字幕浮在任何窗口上，译文还能念给你听。开源免费。" />
+<meta property="og:description" content="支持 Qwen、OpenAI、Gemini 的实时同传，字幕浮在任何窗口上，译文还能念给你听。开源免费。" />
 <meta property="og:image" content="https://nosugark.github.io/ReaLingo/promo-poster.jpg" />
 <meta property="og:type" content="website" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -264,7 +264,7 @@ footer a { text-decoration: none; }
   <div class="wrap">
     <img class="logo reveal" src="banner.webp" alt="ReaLingo" width="1075" height="320" />
     <h1 class="reveal" style="--d:.06s"><span class="zh">实时同传，<span class="grad">就在你的桌面</span></span><span class="en">Live interpreting, <span class="grad">on your desktop</span></span></h1>
-    <p class="lead reveal" style="--d:.12s"><span class="zh">开会、看视频、上网课时，把麦克风、系统声音或音频文件交给它，译文实时浮在任何窗口上。开源免费，自带百炼 API Key 即可。</span><span class="en">In a meeting, a video or a lecture: hand it your mic, system audio or a file, and the translation floats live over any window. Free and open source — bring your own Model Studio key.</span></p>
+    <p class="lead reveal" style="--d:.12s"><span class="zh">开会、看视频、上网课时，把麦克风、系统声音或音频文件交给它，译文实时浮在任何窗口上。开源免费，自带阿里云百炼、OpenAI 或 Google Gemini 的 API Key 即可。</span><span class="en">In a meeting, a video or a lecture: hand it your mic, system audio or a file, and the translation floats live over any window. Free and open source — bring your own Alibaba Cloud Model Studio, OpenAI or Google Gemini key.</span></p>
     <div class="cta reveal" style="--d:.18s">
       <a class="btn primary" id="hero-dl" href="https://github.com/noSugarK/ReaLingo/releases/latest">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4.2-4.2M12 14l-4.2-4.2M4.5 17.5v1A2.5 2.5 0 0 0 7 21h10a2.5 2.5 0 0 0 2.5-2.5v-1"/></svg>
@@ -296,7 +296,7 @@ footer a { text-decoration: none; }
     </div>
     <div class="steps">
       <div class="reveal"><b><span class="zh">下载安装</span><span class="en">Install</span></b><p><span class="zh">Windows、macOS、Ubuntu 各有安装包，页面会自动推荐你的系统对应的那个。</span><span class="en">Installers for Windows, macOS and Ubuntu — this page picks the one for your system.</span></p></div>
-      <div class="reveal" style="--d:.08s"><b><span class="zh">填入 API Key</span><span class="en">Add your API key</span></b><p><span class="zh">到 <a href="https://bailian.console.aliyun.com/?tab=model#/api-key">百炼控制台</a> 拿一个 Key（新加坡地域用 <a href="https://bailian.console.alibabacloud.com/?tab=model#/api-key">国际站</a>），粘贴到设置页。它存进系统凭据库，不写进配置文件。</span><span class="en">Get a key from the <a href="https://bailian.console.alibabacloud.com/?tab=model#/api-key">Model Studio console</a> and paste it in Settings. It goes into the OS keychain, not a config file.</span></p></div>
+      <div class="reveal" style="--d:.08s"><b><span class="zh">填入 API Key</span><span class="en">Add your API key</span></b><p><span class="zh">在设置里选接口，到 <a href="https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key">百炼控制台</a>、<a href="https://platform.openai.com/api-keys">OpenAI</a> 或 <a href="https://aistudio.google.com/apikey">Google AI Studio</a> 拿一个 Key 粘贴进去。它存进系统凭据库，不写进配置文件。</span><span class="en">Pick an API in Settings and paste a key from the <a href="https://bailian.console.aliyun.com/ap-southeast-1/model/settings/api-key">Model Studio console</a>, <a href="https://platform.openai.com/api-keys">OpenAI</a> or <a href="https://aistudio.google.com/apikey">Google AI Studio</a>. It goes into the OS keychain, not a config file.</span></p></div>
       <div class="reveal" style="--d:.16s"><b><span class="zh">选来源，点开始</span><span class="en">Pick a source, press start</span></b><p><span class="zh">麦克风、系统声音或音频文件三选一，选好目标语言，打开字幕窗，点「开始翻译」。</span><span class="en">Microphone, system audio or a file; choose the target language, open the overlay, press Start.</span></p></div>
     </div>
   </div>
@@ -338,7 +338,7 @@ footer a { text-decoration: none; }
     <div class="head reveal">
       <div class="kicker"><span class="zh">语言</span><span class="en">Languages</span></div>
       <h2 class="h2"><span class="zh">你要的语言，大概率都在</span><span class="en">Your language is probably here</span></h2>
-      <p class="lead"><span class="zh">Qwen3.5-LiveTranslate 支持 60 种语言互译，源语言可以自动检测。带喇叭图标的可以朗读译文；也能切回旧模型 Qwen3（18 种）。</span><span class="en">Qwen3.5-LiveTranslate covers 60 languages, with automatic source detection. The ones with a speaker can be read aloud; the older Qwen3 model (18) is still selectable.</span></p>
+      <p class="lead"><span class="zh">下面是 Qwen3.5 / 3.8 支持的 60 种语言，源语言可以自动检测，带喇叭图标的可以朗读译文。Gemini 覆盖其中 54 种且都能朗读；OpenAI 能译出其中 13 种；旧模型 Qwen3 为 18 种。</span><span class="en">These are the 60 languages Qwen3.5 / 3.8 cover, with automatic source detection; the ones with a speaker can be read aloud. Gemini covers 54 of them, all spoken; OpenAI translates into 13; the older Qwen3 handles 18.</span></p>
     </div>
     <div class="langbar reveal">
       <input id="q" type="search" placeholder="搜索语言 / Search…" autocomplete="off" />
@@ -413,14 +413,14 @@ footer a { text-decoration: none; }
           <div class="kicker"><span class="zh">隐私</span><span class="en">Privacy</span></div>
           <h3><span class="zh">你的 Key，只在你的电脑上</span><span class="en">Your key stays on your machine</span></h3>
           <ul>
-            <li><span class="zh">没有中转服务器：应用直接连阿里云百炼，音频只发给它</span><span class="en">No relay server: the app talks to Model Studio directly, and audio goes nowhere else</span></li>
+            <li><span class="zh">没有中转服务器：应用直接连你选的服务（百炼、OpenAI 或 Gemini），音频只发给它</span><span class="en">No relay server: the app talks straight to the service you pick (Model Studio, OpenAI or Gemini), and audio goes nowhere else</span></li>
             <li><span class="zh">API Key 存进 Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service</span><span class="en">The key lives in Credential Manager, Keychain or Secret Service</span></li>
             <li><span class="zh">代码全部开源（MIT），可以自己检查、自己编译</span><span class="en">All of it is open source (MIT) — read it, build it yourself</span></li>
           </ul>
         </div>
         <div class="art reveal" style="--d:.1s">
           <div class="lockrow"><svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg><div><b><span class="zh">系统凭据库</span><span class="en">OS keychain</span></b><small><span class="zh">磁盘上没有明文 Key</span><span class="en">No plaintext key on disk</span></small></div></div>
-          <div class="lockrow"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><div><b><span class="zh">直连百炼</span><span class="en">Direct to Model Studio</span></b><small><span class="zh">WebSocket 由 Rust 内核发起</span><span class="en">The Rust core opens the WebSocket</span></small></div></div>
+          <div class="lockrow"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><div><b><span class="zh">直连服务商</span><span class="en">Direct to the provider</span></b><small><span class="zh">WebSocket 由 Rust 内核发起</span><span class="en">The Rust core opens the WebSocket</span></small></div></div>
           <div class="lockrow"><svg viewBox="0 0 24 24"><path d="M12 3.2l7.6 4.2v9.2L12 20.8 4.4 16.6V7.4z"/><path d="M12 12.2l7.6-4.4M12 12.2v8.6M12 12.2L4.4 7.8"/></svg><div><b><span class="zh">开源 · MIT</span><span class="en">Open source · MIT</span></b><small>Tauri 2 · Rust · Vue 3</small></div></div>
         </div>
       </div>
@@ -455,8 +455,9 @@ footer a { text-decoration: none; }
       <h2 class="h2"><span class="zh">你可能想问</span><span class="en">You might be wondering</span></h2>
     </div>
     <div class="faq reveal">
-      <details><summary><span class="zh">要花钱吗？</span><span class="en">Does it cost anything?</span></summary><p><span class="zh">ReaLingo 本身开源免费。翻译由阿里云百炼提供，按你自己账号的用量计费，具体价格以百炼官网为准。</span><span class="en">ReaLingo is free and open source. Translation runs on your own Alibaba Cloud Model Studio account and is billed to it — see their pricing.</span></p></details>
-      <details><summary><span class="zh">北京和新加坡地域选哪个？</span><span class="en">Beijing or Singapore region?</span></summary><p><span class="zh">跟你的百炼账号走：国内站的 Key 选北京，国际站的 Key 选新加坡。设置页底部会显示最终连接的地址；业务空间 ID 选填，填了走专属域名。</span><span class="en">Match your account: China-site keys use Beijing, international keys use Singapore. Settings shows the exact endpoint; a workspace ID is optional and switches to its dedicated domain.</span></p></details>
+      <details><summary><span class="zh">要花钱吗？</span><span class="en">Does it cost anything?</span></summary><p><span class="zh">ReaLingo 本身开源免费。翻译由你选的服务（阿里云百炼、OpenAI 或 Google Gemini）提供，按你自己账号的用量计费，具体价格以各家官网为准。</span><span class="en">ReaLingo is free and open source. Translation runs on your own account with the service you pick (Alibaba Cloud Model Studio, OpenAI or Google Gemini) and is billed to it — see their pricing.</span></p></details>
+      <details><summary><span class="zh">选哪个接口？</span><span class="en">Which API should I pick?</span></summary><p><span class="zh">手上有哪家的 Key 就选哪家。语言最全的是 Qwen3.5 / 3.8（60 种，Qwen 还支持热词和 47 种音色）；Gemini 覆盖 54 种且全部能朗读；OpenAI 能译出 13 种。模型和接入地址都能自己改，接代理或兼容服务也行。</span><span class="en">Use whichever key you have. Qwen3.5 / 3.8 cover the most languages (60, plus hotwords and 47 voices); Gemini covers 54, all spoken; OpenAI translates into 13. Model and endpoint are editable, so a proxy or compatible service works too.</span></p></details>
+      <details><summary><span class="zh">百炼选北京还是新加坡地域？</span><span class="en">Model Studio: Beijing or Singapore region?</span></summary><p><span class="zh">跟你的百炼账号走：国内站的 Key 选北京，国际站的 Key 选新加坡。目前只有这两个地域提供实时翻译模型。设置页「高级」里会显示最终连接的地址；业务空间 ID 选填，填了走专属域名。</span><span class="en">Match your account: China-site keys use Beijing, international keys use Singapore — the only regions serving the realtime translation models today. Settings → Advanced shows the exact endpoint; a workspace ID is optional and switches to its dedicated domain.</span></p></details>
       <details><summary><span class="zh">macOS 提示「已损坏」或打不开？</span><span class="en">macOS says the app is damaged?</span></summary><p><span class="zh">应用没有经过 Apple 公证。把它拖进「应用程序」后，在终端执行 <code>xattr -dr com.apple.quarantine /Applications/ReaLingo.app</code>，或到「系统设置 → 隐私与安全性」点「仍要打开」。升级后系统声音没反应，就在「屏幕与系统录音」里删掉 ReaLingo 重新授权。</span><span class="en">It is not notarised. After moving it to Applications, run <code>xattr -dr com.apple.quarantine /Applications/ReaLingo.app</code>, or click “Open Anyway” in System Settings → Privacy &amp; Security. If system audio goes quiet after an update, remove ReaLingo under Screen &amp; System Audio Recording and grant it again.</span></p></details>
       <details><summary><span class="zh">朗读会不会被录回去，越翻越乱？</span><span class="en">Will it record its own voice and loop?</span></summary><p><span class="zh">录系统声音时不会：Windows 和 macOS 都会把 ReaLingo 自己的进程排除在采集之外，Linux 上则不朗读。用麦克风时，扬声器的声音会被物理地收进去，请戴耳机。</span><span class="en">Not with system audio: Windows and macOS leave ReaLingo’s own process out of the capture, and Linux does not speak at all. With a microphone the speakers are physically picked up — use headphones.</span></p></details>
       <details><summary><span class="zh">翻译记录会存在哪？</span><span class="en">Where are transcripts kept?</span></summary><p><span class="zh">默认不保存。打开翻译流右上角的「记录」后，每场存成 <code>app-data/history/</code> 下的一个 JSONL 文件，可以在「翻译历史」里打开文件夹、导出或删除。</span><span class="en">Nothing is saved by default. Turn on “Record” and each session becomes one JSONL file in <code>app-data/history/</code>, which the History panel can open, export or delete.</span></p></details>
