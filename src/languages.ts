@@ -87,6 +87,32 @@ export const MODEL_QWEN3 = "qwen3-livetranslate-flash-realtime";
 export const MODEL_OPENAI = "gpt-realtime-translate";
 export const MODEL_GEMINI = "gemini-3.5-live-translate-preview";
 
+/** Who issues the key and runs the endpoint. Protocols of one vendor share both. */
+export type Vendor = "qwen" | "openai" | "gemini";
+
+/**
+ * Everything the UI decides per protocol, in one place: each of these used to be its own
+ * `=== "openai" || === "gemini"` check, written differently at every site.
+ */
+export interface ProtocolInfo {
+  vendor: Vendor;
+  /** The service chooses the voice: no voice picker, a hint instead. */
+  serverVoice: boolean;
+  /** The source language is always detected: the source picker offers only "auto". */
+  autoSource: boolean;
+  /** Every offered target language can be read aloud (Qwen speaks only some). */
+  speaksAll: boolean;
+  /** A custom URL is dialled exactly as typed: the model goes in the setup message, not the URL. */
+  urlAsIs: boolean;
+}
+
+export const PROTOCOLS: Record<Protocol, ProtocolInfo> = {
+  qwen35: { vendor: "qwen", serverVoice: false, autoSource: false, speaksAll: false, urlAsIs: false },
+  qwen38: { vendor: "qwen", serverVoice: false, autoSource: true, speaksAll: false, urlAsIs: false },
+  openai: { vendor: "openai", serverVoice: true, autoSource: true, speaksAll: true, urlAsIs: false },
+  gemini: { vendor: "gemini", serverVoice: true, autoSource: true, speaksAll: true, urlAsIs: true },
+};
+
 export interface Preset {
   id: string;
   name: string;
@@ -127,10 +153,8 @@ export function languageCodes(protocol: Protocol, model: string): string[] {
   return model === MODEL_QWEN3 ? all.filter((c) => QWEN3_CODES.has(c)) : all;
 }
 
-/** Only Qwen speaks a subset; OpenAI and Gemini are speech-to-speech in every language they offer. */
 export function canSpeak(protocol: Protocol, code: string): boolean {
-  if (protocol === "openai" || protocol === "gemini") return true;
-  return BY_CODE.get(code)?.tts ?? false;
+  return PROTOCOLS[protocol].speaksAll || (BY_CODE.get(code)?.tts ?? false);
 }
 
 // Voices the LiveTranslate models accept for `session.voice`, from the Model Studio voice list

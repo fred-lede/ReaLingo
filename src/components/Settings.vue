@@ -3,7 +3,7 @@ import { computed, ref, watch, toRaw } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region } from "../store";
 import { isRunning } from "../stream";
-import { PRESETS } from "../languages";
+import { PRESETS, PROTOCOLS } from "../languages";
 import { t } from "../i18n";
 import Picker from "./Picker.vue";
 import Sheet from "./Sheet.vue";
@@ -45,8 +45,9 @@ watch(hotwordText, (text) => {
 });
 const hotwordCount = computed(() => Object.keys(settings.hotwords).length);
 
+const vendor = computed(() => PROTOCOLS[settings.protocol].vendor);
 /** Region, workspace, hotwords and the Model Studio links only mean something for Qwen. */
-const isQwen = computed(() => settings.protocol === "qwen35" || settings.protocol === "qwen38");
+const isQwen = computed(() => vendor.value === "qwen");
 
 const presets = computed(() =>
   PRESETS[settings.protocol].map((p) => ({ value: p.id, label: p.name, note: `${p.langs} ${t("langsUnit")}` }))
@@ -67,16 +68,19 @@ const modelPick = computed({
 const apiKey = computed({ get: activeKey, set: setActiveKey });
 
 /**
- * A model meant for one protocol is wrong for another, so it starts over. The URL survives a
- * move between the two Qwens — same endpoint, same account — but not to another vendor.
+ * A model belongs to one protocol and a URL to one vendor (the two Qwens share an endpoint),
+ * so each is put away on the way out and brought back on return: a round trip through
+ * another protocol no longer loses a custom model or proxy address.
  */
 function pickProtocol(p: Protocol) {
-  if (p === settings.protocol) return;
-  const vendor = (x: Protocol) => (x === "qwen35" || x === "qwen38" ? "qwen" : x);
-  if (vendor(p) !== vendor(settings.protocol)) settings.url = "";
+  const from = settings.protocol;
+  if (p === from) return;
+  settings.savedModels[from] = settings.model;
+  settings.savedUrls[PROTOCOLS[from].vendor] = settings.url;
   settings.protocol = p;
-  settings.model = PRESETS[p][0].id;
-  customModel.value = false;
+  settings.model = settings.savedModels[p] ?? PRESETS[p][0].id;
+  settings.url = settings.savedUrls[PROTOCOLS[p].vendor] ?? "";
+  customModel.value = !PRESETS[p].some((x) => x.id === settings.model);
 }
 
 // A dropdown, not a segmented row: the list grows with every protocol added.
@@ -93,14 +97,16 @@ const protocolPick = computed({
 
 /** Model Studio console pages are per region; the region id is part of the path. */
 const consoleUrl = (page: string) => `https://bailian.console.aliyun.com/${REGION_ID[settings.region]}/${page}`;
-const keyConsole = computed(() => {
-  if (settings.protocol === "openai") return "https://platform.openai.com/api-keys";
-  if (settings.protocol === "gemini") return "https://aistudio.google.com/apikey";
-  return consoleUrl("model/settings/api-key");
-});
-const keyConsoleLabel = computed(() =>
-  t(settings.protocol === "openai" ? "apiKeyGetOpenai" : settings.protocol === "gemini" ? "apiKeyGetGemini" : "apiKeyGet")
+const keyConsole = computed(
+  () =>
+    ({
+      qwen: consoleUrl("model/settings/api-key"),
+      openai: "https://platform.openai.com/api-keys",
+      gemini: "https://aistudio.google.com/apikey",
+    })[vendor.value]
 );
+const KEY_LABEL = { qwen: "apiKeyGet", openai: "apiKeyGetOpenai", gemini: "apiKeyGetGemini" } as const;
+const keyConsoleLabel = computed(() => t(KEY_LABEL[vendor.value]));
 // The opener plugin, not an <a href>: a plain link navigates the app's own webview away.
 const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
 
@@ -203,8 +209,7 @@ const advancedOpen = !!settings.url;
         <label class="field">
           <span class="label">{{ t("url") }}</span>
           <input v-model.trim="settings.url" type="text" placeholder="wss://..." :disabled="isRunning()" spellcheck="false" />
-          <!-- Gemini names its model in setup, so its URL is never touched. -->
-          <small>{{ settings.protocol === "gemini" ? t("urlHintAsIs") : t("urlHint") }}</small>
+          <small>{{ PROTOCOLS[settings.protocol].urlAsIs ? t("urlHintAsIs") : t("urlHint") }}</small>
         </label>
 
         <div class="field">

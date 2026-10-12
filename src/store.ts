@@ -1,7 +1,7 @@
 import { reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { MODEL_QWEN3_5, MODEL_QWEN3_8 } from "./languages";
+import { MODEL_QWEN3_5, MODEL_QWEN3_8, PROTOCOLS, type Vendor } from "./languages";
 
 /** Only the regions that serve the LiveTranslate models — see `config::Region` in Rust. */
 export type Region = "beijing" | "singapore";
@@ -42,8 +42,9 @@ export interface SubtitleStyle {
  */
 export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini";
 
-/** Where each protocol's key lives. A key belongs to the account, so both Qwens share one. */
-const KEY_FIELD = { qwen35: "apiKey", qwen38: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
+/** Where each vendor's key lives. A key belongs to the account, not the protocol. */
+const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
+const keyField = (p: Protocol) => KEY_FIELD[PROTOCOLS[p].vendor];
 /** One protocol per credential-store slot, for the loops that visit every key once. */
 const KEY_SLOTS = ["qwen35", "openai", "gemini"] as const;
 
@@ -54,6 +55,9 @@ export interface Settings {
   geminiKey: string;
   /** Empty: the protocol's default endpoint. */
   url: string;
+  /** What each protocol / vendor was last set to, restored when switching back to it. */
+  savedModels: Partial<Record<Protocol, string>>;
+  savedUrls: Partial<Record<Vendor, string>>;
   workspaceId: string;
   region: Region;
   sourceLang: string;
@@ -76,6 +80,8 @@ export const settings = reactive<Settings>({
   openaiKey: "",
   geminiKey: "",
   url: "",
+  savedModels: {},
+  savedUrls: {},
   workspaceId: "",
   region: "beijing",
   sourceLang: "auto",
@@ -129,7 +135,7 @@ export async function initSettings(persist = true) {
     // hand-edited config). Move it across and blank it out — leaving the plaintext copy
     // behind would make the whole exercise pointless.
     for (const protocol of KEY_SLOTS) {
-      const field = KEY_FIELD[protocol];
+      const field = keyField(protocol);
       if (settings[field]) await invoke("set_api_key", { protocol, key: settings[field] });
       else settings[field] = await invoke<string>("get_api_key", { protocol });
     }
@@ -140,7 +146,7 @@ export async function initSettings(persist = true) {
     watch(settings, (v) => void store?.set(KEY, persistable(v)), { deep: true });
     if (keyringOk.value) {
       for (const protocol of KEY_SLOTS) {
-        watch(() => settings[KEY_FIELD[protocol]], (key) => saveApiKey(protocol, key));
+        watch(() => settings[keyField(protocol)], (key) => saveApiKey(protocol, key));
       }
     }
   }
@@ -149,11 +155,11 @@ export async function initSettings(persist = true) {
 
 /** The key of the protocol in use — the one a session will actually send. */
 export function activeKey(): string {
-  return settings[KEY_FIELD[settings.protocol]];
+  return settings[keyField(settings.protocol)];
 }
 
 export function setActiveKey(key: string) {
-  settings[KEY_FIELD[settings.protocol]] = key;
+  settings[keyField(settings.protocol)] = key;
 }
 
 /** What goes to settings.json — never an API key once the credential store holds it. */

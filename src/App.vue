@@ -13,7 +13,7 @@ import Settings from "./components/Settings.vue";
 import About from "./components/About.vue";
 import History from "./components/History.vue";
 import { locale, setLocale, t } from "./i18n";
-import { canSpeak, langName, languageCodes, modelName, VOICES } from "./languages";
+import { canSpeak, langName, languageCodes, modelName, PROTOCOLS, VOICES } from "./languages";
 import { check, checkUpdateAtStartup, openHome } from "./update";
 import { activeKey, settings, initSettings, resolvedTheme, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
 import {
@@ -123,8 +123,8 @@ const voiceOptions = computed(() =>
     keywords: `${v.zh} ${v.descZh} ${v.descEn}`,
   }))
 );
-// Qwen3.8 and OpenAI always detect the source language themselves.
-const autoSourceOnly = computed(() => settings.protocol !== "qwen35");
+// Some protocols always detect the source language themselves (see PROTOCOLS).
+const autoSourceOnly = computed(() => PROTOCOLS[settings.protocol].autoSource);
 watch(autoSourceOnly, (only) => {
   if (only) settings.sourceLang = "auto";
 }, { immediate: true });
@@ -473,7 +473,7 @@ watch([lines, current], async () => {
             <p v-if="settings.speak && speakBlocked" class="hint">{{ t(speakBlocked) }}</p>
             <template v-else-if="settings.speak">
               <!-- OpenAI and Gemini pick their own voice; there is nothing to choose. -->
-              <p v-if="settings.protocol === 'openai' || settings.protocol === 'gemini'" class="hint">{{ t("voiceServer") }}</p>
+              <p v-if="PROTOCOLS[settings.protocol].serverVoice" class="hint">{{ t("voiceServer") }}</p>
               <div v-else class="line">
                 <span>{{ t("voice") }}</span>
                 <Picker v-model="settings.voice" class="grow" :options="voiceOptions" :disabled="isRunning()" />
