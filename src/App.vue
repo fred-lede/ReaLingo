@@ -690,7 +690,9 @@ watch([lines, current], async () => {
 .side-scroll > * { flex: none; }
 
 .mini { font-size: 11px; font-weight: 600; color: var(--ink-3); margin-bottom: 5px; }
-.hint { font-size: 11.5px; color: var(--ink-3); }
+/* <p> margins on top of the card gap left hints floating; the gap alone spaces them. */
+.hint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+.hint + .hint { margin-top: -6px; }
 .notice {
   margin: 0;
   padding: 8px 10px;
