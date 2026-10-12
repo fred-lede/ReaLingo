@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Notify;
@@ -24,12 +24,17 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::{Protocol, Settings};
 use crate::player::Player;
+use crate::resample::chunk_samples;
 
 pub const EVENT: &str = "rt://event";
 /// Every server frame, verbatim — the app's diagnostics drawer reads this. The realtime
 /// protocol's exact field names for source transcripts are not fully documented, so being
 /// able to see the wire traffic matters more than it usually would.
 pub const RAW_EVENT: &str = "rt://raw";
+
+/// How long a server that never announces the end (Gemini) must go without text or
+/// non-silent audio, after stopping, before the session counts as done.
+const QUIET_END: Duration = Duration::from_secs(4);
 
 /// One normalised server event.
 ///
@@ -123,13 +128,29 @@ async fn connect_and_pump(
         }
         // Finishing: the reader below switches to the short wait, and capture stops.
         stop_up.store(true, Ordering::Relaxed);
+        // A pause for the protocols that need one to let go of the last words, paced like
+        // the file decoder rather than dumped at once.
+        let chunk = chunk_samples(wire.sample_rate());
+        let silence = wire.audio_frame(BASE64_STANDARD.encode(vec![0u8; chunk * 2])).to_string();
+        for _ in 0..wire.flush_silence() / chunk {
+            if write.send(Message::Text(silence.clone().into())).await.is_err() {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        }
         let _ = write.send(Message::Text(wire.finish_frame().to_string().into())).await;
         // Not closed here: a close frame makes the server hang up before the last sentence
         // is out. The reader closes it once `is_finished` says everything has arrived.
         Some(write)
     });
 
+    // Last time the server said something worth having: text, or audio that is not silence.
+    // Only consulted where the server never announces the end (see `signals_finish`).
+    let mut heard = Instant::now();
     loop {
+        if stop.load(Ordering::Relaxed) && !settings.signals_finish() && heard.elapsed() > QUIET_END {
+            break;
+        }
         // After session.finish the server still owes the last sentence, which can take a
         // few seconds of silence to produce; 15 s bounds a server that never answers.
         let idle = if stop.load(Ordering::Relaxed) {
@@ -162,6 +183,9 @@ async fn connect_and_pump(
             ready.notify_one();
         }
         if let Some(audio) = take_audio(&mut value) {
+            if audio.iter().any(|&b| b != 0) {
+                heard = Instant::now();
+            }
             if let Some(p) = player.as_mut() {
                 p.push(&audio);
             }
@@ -171,6 +195,9 @@ async fn connect_and_pump(
             return Err(anyhow!(reason));
         }
         for ev in text_stream.next(&value) {
+            if !ev.text.is_empty() {
+                heard = Instant::now();
+            }
             emit(app, ev);
         }
         if settings.is_finished(&value) {
@@ -313,8 +340,9 @@ impl TextStream {
             self.open = true;
             out.push(Event { kind: "link", id: id.clone(), text: id.clone(), ..Default::default() });
         }
+        // Deltas carry their own leading space (" Welcome"), which is noise at a row's start.
         for (kind, text) in [("target", &self.target), ("source", &self.source)] {
-            out.push(Event { kind, id: id.clone(), text: text.clone(), done, ..Default::default() });
+            out.push(Event { kind, id: id.clone(), text: text.trim_start().to_string(), done, ..Default::default() });
         }
     }
 
@@ -627,6 +655,10 @@ mod tests {
         assert_eq!((done.id.as_str(), done.text.as_str()), ("oa0", "早上好。"));
         // A frame with neither (audio only, turnComplete) yields no text events.
         assert!(st.next(&json!({ "serverContent": { "turnComplete": true } })).is_empty());
+        // A turn opened by a delta with its own leading space (seen live) shows without it.
+        let mut fresh = TextStream::default();
+        let evs = fresh.next(&json!({ "serverContent": { "inputTranscription": { "text": " Today we" } } }));
+        assert!(evs.iter().any(|e| e.kind == "source" && e.text == "Today we"));
 
         let mut audio = json!({ "serverContent": { "modelTurn": { "parts": [
             { "inlineData": { "mimeType": "audio/pcm;rate=24000", "data": BASE64_STANDARD.encode([1u8, 2]) } },

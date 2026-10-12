@@ -171,14 +171,29 @@ impl Settings {
     }
 
     /// Whether this frame means everything owed after `finish_frame` has arrived.
-    // ponytail: Gemini's translation docs name no such frame, so a Gemini stop waits out the
-    // reader's short idle timeout instead; switch it once a live probe shows the real end.
     pub fn is_finished(&self, v: &serde_json::Value) -> bool {
         let ty = v.get("type").and_then(serde_json::Value::as_str);
         match self.protocol {
             Protocol::Qwen35 | Protocol::Qwen38 => ty == Some("session.finished"),
             Protocol::Openai => ty == Some("session.closed"),
             Protocol::Gemini => false,
+        }
+    }
+
+    /// Whether the server ever says it is done. Gemini does not: after `audioStreamEnd` it
+    /// keeps streaming silent audio indefinitely (seen live), so the end has to be inferred
+    /// from the content going quiet instead.
+    pub fn signals_finish(&self) -> bool {
+        self.protocol != Protocol::Gemini
+    }
+
+    /// Silence to send after the last real audio, in samples. Gemini holds back the final
+    /// words until it hears a pause: without this the last clause never arrived; with ~3 s
+    /// of trailing silence it did (seen live).
+    pub fn flush_silence(&self) -> usize {
+        match self.protocol {
+            Protocol::Gemini => self.sample_rate() as usize * 3,
+            _ => 0,
         }
     }
 
