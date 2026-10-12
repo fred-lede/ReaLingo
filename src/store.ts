@@ -164,8 +164,8 @@ function persistable(v: Settings) {
 }
 
 // Debounced: one credential-store write per pause, not one per keystroke.
-const keyTimers: Record<string, number | undefined> = {};
-function saveApiKey(protocol: string, key: string) {
+const keyTimers: Partial<Record<Protocol, number>> = {};
+function saveApiKey(protocol: Protocol, key: string) {
   clearTimeout(keyTimers[protocol]);
   keyTimers[protocol] = window.setTimeout(() => void invoke("set_api_key", { protocol, key }), 400);
 }

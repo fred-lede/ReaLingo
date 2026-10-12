@@ -120,7 +120,7 @@ const OPENAI_CODES = new Set("es pt fr ja ru zh de ko hi id vi it en".split(" ")
 const GEMINI_MISSING = new Set("yue ast bs ceb ky tg".split(" "));
 
 /** Codes the given model can actually translate into. */
-export function languageCodes(protocol: string, model: string): string[] {
+export function languageCodes(protocol: Protocol, model: string): string[] {
   const all = LANGUAGES.map((l) => l.code);
   if (protocol === "openai") return all.filter((c) => OPENAI_CODES.has(c));
   if (protocol === "gemini") return all.filter((c) => !GEMINI_MISSING.has(c));
@@ -128,7 +128,7 @@ export function languageCodes(protocol: string, model: string): string[] {
 }
 
 /** Only Qwen speaks a subset; OpenAI and Gemini are speech-to-speech in every language they offer. */
-export function canSpeak(protocol: string, code: string): boolean {
+export function canSpeak(protocol: Protocol, code: string): boolean {
   if (protocol === "openai" || protocol === "gemini") return true;
   return BY_CODE.get(code)?.tts ?? false;
 }

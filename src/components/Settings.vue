@@ -203,7 +203,8 @@ const advancedOpen = !!settings.url;
         <label class="field">
           <span class="label">{{ t("url") }}</span>
           <input v-model.trim="settings.url" type="text" placeholder="wss://..." :disabled="isRunning()" spellcheck="false" />
-          <small>{{ t("urlHint") }}</small>
+          <!-- Gemini names its model in setup, so its URL is never touched. -->
+          <small>{{ settings.protocol === "gemini" ? t("urlHintAsIs") : t("urlHint") }}</small>
         </label>
 
         <div class="field">

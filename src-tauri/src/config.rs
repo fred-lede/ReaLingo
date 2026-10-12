@@ -87,7 +87,9 @@ pub struct Settings {
     pub source_lang: String,
     #[serde(default = "en")]
     pub target_lang: String,
-    #[serde(default = "default_model")]
+    /// Empty when absent, not a Qwen name: `model()` then fills in the protocol's own default.
+    /// A Qwen default here sent "qwen3.5-…" to Gemini whenever the field was left out.
+    #[serde(default)]
     pub model: String,
     /// Hotwords: source term -> preferred translation. The service asks for at most 1000.
     /// BTreeMap, not HashMap: the wire payload then has a stable order, which makes the
@@ -104,9 +106,6 @@ pub struct Settings {
 
 fn auto() -> String {
     "auto".into()
-}
-fn default_model() -> String {
-    MODEL_QWEN3_5.into()
 }
 fn default_voice() -> String {
     VOICE.into()
@@ -389,6 +388,15 @@ mod tests {
         let mut blank = s(Region::Beijing, "");
         blank.model = String::new();
         assert!(blank.ws_url().ends_with(&format!("?model={MODEL_QWEN3_5}")));
+    }
+
+    #[test]
+    fn a_missing_model_takes_the_protocols_own_default() {
+        let parse = |p: &str| serde_json::from_value::<Settings>(serde_json::json!({ "protocol": p })).unwrap();
+        assert_eq!(parse("qwen35").model(), MODEL_QWEN3_5);
+        assert_eq!(parse("qwen38").model(), MODEL_QWEN3_8);
+        assert_eq!(parse("openai").model(), MODEL_OPENAI);
+        assert_eq!(parse("gemini").model(), MODEL_GEMINI);
     }
 
     #[test]
