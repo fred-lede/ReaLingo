@@ -215,6 +215,8 @@ function pick(value: string) {
 .pk-pop .pk-opt:hover { background: var(--shade); }
 .pk-pop .pk-opt.on { background: var(--accent); color: #fff; }
 .pk-pop .pk-opt.on .pk-note { color: rgba(255, 255, 255, 0.7); }
-.pk-pop .pk-note { flex: none; font-size: 11px; color: var(--ink-3); font-variant: small-caps; }
+/* Short notes (a language code) sit at their natural width; long ones (a voice description)
+   wrap inside 60% rather than squeezing the name into an ellipsis. */
+.pk-pop .pk-note { flex: 0 1 auto; max-width: 60%; text-align: right; font-size: 11px; color: var(--ink-3); }
 .pk-pop .pk-none { padding: 14px; text-align: center; color: var(--ink-3); font-size: 13px; }
 </style>

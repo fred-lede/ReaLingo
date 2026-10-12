@@ -113,7 +113,16 @@ async function chooseFile() {
 }
 
 /* ---------- read aloud ---------- */
-const voiceOptions = VOICES.map((v) => ({ value: v, label: v }));
+// The note says what the voice sounds like; search matches names and descriptions in both
+// UI languages, so typing "温柔" or "British" narrows the list.
+const voiceOptions = computed(() =>
+  VOICES.map((v) => ({
+    value: v.id,
+    label: locale.value === "zh" ? `${v.id} · ${v.zh}` : v.id,
+    note: locale.value === "zh" ? v.descZh : v.descEn,
+    keywords: `${v.zh} ${v.descZh} ${v.descEn}`,
+  }))
+);
 // Qwen3.8 and OpenAI always detect the source language themselves.
 const autoSourceOnly = computed(() => settings.protocol !== "qwen35");
 watch(autoSourceOnly, (only) => {
@@ -466,7 +475,7 @@ watch([lines, current], async () => {
               <!-- OpenAI picks its own voice; there is nothing to choose. -->
               <div v-if="settings.protocol !== 'openai'" class="line">
                 <span>{{ t("voice") }}</span>
-                <Picker v-model="settings.voice" :options="voiceOptions" :disabled="isRunning()" />
+                <Picker v-model="settings.voice" class="grow" :options="voiceOptions" :disabled="isRunning()" />
               </div>
               <p v-if="sourceKind === 'mic'" class="hint">{{ t("speakMic") }}</p>
             </template>
@@ -478,6 +487,9 @@ watch([lines, current], async () => {
               <span>{{ t("subShow") }}</span>
               <button class="sw" :class="{ on: settings.sub.show }" @click="settings.sub.show = !settings.sub.show" />
             </label>
+
+            <!-- Styling a window that is not on screen is guesswork; the controls follow it. -->
+            <template v-if="settings.sub.show">
 
             <div class="seg">
               <button
@@ -544,6 +556,7 @@ watch([lines, current], async () => {
                 <button class="sw" :class="{ on: settings.sub.locked }" @click="settings.sub.locked = !settings.sub.locked" />
               </label>
             </div>
+            </template>
           </Card>
         </div>
 

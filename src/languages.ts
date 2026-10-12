@@ -125,14 +125,72 @@ export function canSpeak(code: string): boolean {
   return BY_CODE.get(code)?.tts ?? false;
 }
 
-/** Voices the LiveTranslate models accept for `session.voice` (Model Studio voice list). */
-export const VOICES = (
-  "Tina Cindy Serena Maia Mia Momo Angel Qiao Katerina Jennifer Mione Sohee Sonrisa Marina Hana " +
-  "Griet Eliška Siiri Ingrid Sigga Bea Chloe Roya Sunnybobi Raymond Ethan Harvey Evan Wil Ryan " +
-  "Aiden Lenn Bodega Emilien Andre Alek Rizky Arda Dolce Jakub Joyner Gold"
-)
-  .split(" ")
-  .concat(["Liora Mira", "Theo Calm", "Li Cassian", "Ono Anna", "Radio Gol"]);
+// Voices the LiveTranslate models accept for `session.voice`, from the Model Studio voice list
+// (help.aliyun.com/zh/model-studio/omni-voice-list): voice|中文名|中文简介|English summary.
+// The summaries are condensed from the official descriptions.
+const VOICE_TABLE = `
+Tina|甜甜|甜美温暖的女声（默认）|Sweet, warm female (default)
+Cindy|林欣宜|台湾腔，娇嗲女声|Cutesy female, Taiwanese accent
+Serena|苏瑶|温柔女声|Gentle female
+Maia|四月|知性温柔的女声|Poised, gentle female
+Mia|舒然|舒缓治愈的生活博主|Soothing lifestyle-vlogger female
+Momo|茉兔|俏皮爱撒娇|Playful, cute female
+Angel|安琪|略带台湾口音的甜美女声|Sweet female, light Taiwanese accent
+Qiao|小乔妹|甜美又有个性|Sweet but spirited female
+Katerina|卡捷琳娜|成熟御姐，韵律感强|Mature female, rich cadence
+Jennifer|詹妮弗|电影质感的美式女声|Cinematic American female
+Mione|敏儿|成熟知性的英式女声|Mature British female
+Sohee|素熙|温柔开朗的韩国女声|Warm, cheerful Korean female
+Sonrisa|索尼莎|热情开朗的拉美女声|Lively Latin American female
+Marina|玛丽娜|多元文化背景的女声|Cosmopolitan female
+Hana|阿幸|成熟的越南女声|Mature Vietnamese female
+Griet|海娜|成熟文艺的荷兰女声|Mature, artsy Dutch female
+Eliška|艾莉卡|温润的中欧女声|Warm Central European female
+Siiri|西芮|内敛温柔，语速舒缓|Reserved, unhurried female
+Ingrid|林恩|淳朴的挪威女声|Down-to-earth Norwegian female
+Sigga|海娜|知性的冰岛女声|Poised Icelandic female
+Bea|雅娜|甜美的菲律宾女声|Sweet Filipino female
+Chloe|思怡|马来西亚白领女声|Malaysian office-worker female
+Roya|萝雅|爽朗自由的运动女孩|Sporty, free-spirited female
+Sunnybobi|知芝|大大咧咧的邻家女孩|Easygoing girl next door
+Liora Mira|清欢|温柔有烟火气的女声|Tender, homely female
+Ono Anna|小野杏|古灵精怪的青梅竹马|Mischievous childhood friend
+Raymond|林川野|清亮的宅男声|Clear-voiced young male
+Ethan|晨煦|阳光有活力，略带北方口音|Bright, upbeat male, slight northern accent
+Harvey|厚|低沉温和的成熟男声|Deep, mellow mature male
+Evan|江晨|青涩的男大学生|Youthful college male
+Wil|伟伦|港台腔小哥哥|Young male, Hong Kong/Taiwan accent
+Ryan|甜茶|节奏强、戏感足|Punchy, dramatic male
+Aiden|艾登|美式大男孩|Young American male
+Lenn|莱恩|理性又带点叛逆的德国青年|Rational, edgy German male
+Bodega|博德加|热情的西班牙大叔|Warm Spanish uncle
+Emilien|埃米尔安|浪漫的法国男声|Romantic French male
+Andre|安德雷|沉稳磁性的男声|Calm, magnetic male
+Alek|阿列克|外冷内暖的俄罗斯男声|Cool-yet-warm Russian male
+Rizky|阿力|有个性的印尼青年|Distinctive Indonesian young male
+Arda|阿尔达|干净温润的男声|Clean, warm male
+Dolce|多尔切|慵懒的意大利大叔|Laid-back Italian uncle
+Jakub|雅克|磁性的波兰文艺青年|Magnetic, artsy Polish male
+Theo Calm|予安|沉静治愈的声音|Calm, healing voice
+Joyner|阿逗|搞笑夸张的喜剧声|Over-the-top comic
+Gold|金爷|西海岸说唱风|West Coast rapper
+Li Cassian|李公公|宫廷太监角色音|Imperial eunuch character
+Radio Gol|拉迪奥·戈尔|足球解说风|Football commentator
+`;
+
+export interface Voice {
+  id: string;
+  zh: string;
+  descZh: string;
+  descEn: string;
+}
+
+export const VOICES: Voice[] = VOICE_TABLE.trim()
+  .split("\n")
+  .map((line) => {
+    const [id, zh, descZh, descEn] = line.split("|");
+    return { id, zh, descZh, descEn };
+  });
 
 export function langName(code: string, locale: "zh" | "en"): string {
   if (code === "auto") return locale === "zh" ? "自动检测" : "Auto detect";
