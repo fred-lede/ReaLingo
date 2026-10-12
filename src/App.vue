@@ -15,7 +15,7 @@ import History from "./components/History.vue";
 import { locale, setLocale, t } from "./i18n";
 import { canSpeak, langName, languageCodes, MODEL_QWEN3_8, VOICES } from "./languages";
 import { check, checkUpdateAtStartup, openHome } from "./update";
-import { settings, initSettings, resolvedTheme, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
+import { activeKey, settings, initSettings, resolvedTheme, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
 import {
   current,
   detectedLang,
@@ -78,7 +78,7 @@ const canStart = computed(() =>
 );
 
 const statusKey = computed(() => {
-  if (!settings.apiKey.trim()) return "statusNoKey" as const;
+  if (!activeKey().trim()) return "statusNoKey" as const;
   if (status.value === "error") return "statusError" as const;
   if (status.value === "connecting") return "statusConnecting" as const;
   if (status.value === "stopping") return "statusStopping" as const;
@@ -114,9 +114,10 @@ async function chooseFile() {
 
 /* ---------- read aloud ---------- */
 const voiceOptions = VOICES.map((v) => ({ value: v, label: v }));
-// Qwen3.8 always detects the source language itself.
-watch(() => settings.model, (model) => {
-  if (model === MODEL_QWEN3_8) settings.sourceLang = "auto";
+// Qwen3.8 and OpenAI always detect the source language themselves.
+const autoSourceOnly = computed(() => settings.provider === "openai" || settings.model === MODEL_QWEN3_8);
+watch(autoSourceOnly, (only) => {
+  if (only) settings.sourceLang = "auto";
 }, { immediate: true });
 // Why speaking cannot happen with the current choices, if it cannot. Linux has no way to
 // leave our own playback out of a monitor source, so system audio would hear itself.
@@ -131,7 +132,7 @@ async function toggle() {
     await stop();
     return;
   }
-  if (!settings.apiKey.trim()) {
+  if (!activeKey().trim()) {
     showSettings.value = true;
     return;
   }
@@ -185,7 +186,7 @@ watch(() => settings.sub.show, showOverlay);
 watch(() => settings.sub.locked, setOverlayClickThrough);
 
 /* ---------- model / languages ---------- */
-const langCodes = computed(() => languageCodes(settings.model));
+const langCodes = computed(() => languageCodes(settings.provider, settings.model));
 
 /** The picker matches on both UI languages, so a zh user can still type "japanese". */
 const langOptions = computed(() =>
@@ -198,7 +199,7 @@ const langOptions = computed(() =>
 );
 const sourceLangOptions = computed(() => [
   { value: "auto", label: langName("auto", locale.value) },
-  ...(settings.model === MODEL_QWEN3_8 ? [] : langOptions.value),
+  ...(autoSourceOnly.value ? [] : langOptions.value),
 ]);
 
 // Switching to the smaller model can strand a language it cannot translate into; the
@@ -459,7 +460,8 @@ watch([lines, current], async () => {
             </label>
             <p v-if="settings.speak && speakBlocked" class="hint">{{ t(speakBlocked) }}</p>
             <template v-else-if="settings.speak">
-              <div class="line">
+              <!-- OpenAI picks its own voice; there is nothing to choose. -->
+              <div v-if="settings.provider !== 'openai'" class="line">
                 <span>{{ t("voice") }}</span>
                 <Picker v-model="settings.voice" :options="voiceOptions" :disabled="isRunning()" />
               </div>

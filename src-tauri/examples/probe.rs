@@ -5,8 +5,9 @@
 //!   set DASHSCOPE_API_KEY=sk-...
 //!   cargo run --example probe -- path\to\audio.wav [target_lang] [model]
 //!   set DASHSCOPE_WORKSPACE_ID=llm-...   (optional dedicated endpoint)
+//!   set OPENAI_API_KEY=sk-...            (instead: probe OpenAI gpt-realtime-translate)
 
-use realingo_lib::config::{Region, Settings};
+use realingo_lib::config::{Provider, Region, Settings};
 use realingo_lib::decode;
 
 use base64::prelude::{Engine, BASE64_STANDARD};
@@ -22,15 +23,25 @@ use tokio_tungstenite::tungstenite::Message;
 async fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: probe <audio file> [target lang] [model]");
     let target = std::env::args().nth(2).unwrap_or_else(|| "zh".into());
-    let api_key = std::env::var("DASHSCOPE_API_KEY").expect("set DASHSCOPE_API_KEY");
+    let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+    let provider = if openai_key.is_empty() { Provider::Qwen } else { Provider::Openai };
+    let api_key = if openai_key.is_empty() {
+        std::env::var("DASHSCOPE_API_KEY").expect("set DASHSCOPE_API_KEY or OPENAI_API_KEY")
+    } else {
+        String::new()
+    };
 
     let settings = Settings {
+        provider,
         api_key,
+        openai_key,
+        url: std::env::var("PROBE_URL").unwrap_or_default(),
         workspace_id: std::env::var("DASHSCOPE_WORKSPACE_ID").unwrap_or_default(),
         region: Region::Beijing,
         source_lang: "auto".into(),
         target_lang: target,
-        model: std::env::args().nth(3).unwrap_or_else(|| realingo_lib::config::MODEL_QWEN3_5.into()),
+        // Empty falls back to the provider's default model.
+        model: std::env::args().nth(3).unwrap_or_default(),
         hotwords: Default::default(),
         // set PROBE_SPEAK=1 to see the audio-modality frames too.
         speak: std::env::var_os("PROBE_SPEAK").is_some(),
@@ -41,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let mut request = settings.ws_url().into_client_request()?;
     request.headers_mut().insert(
         "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", settings.api_key))?,
+        HeaderValue::from_str(&format!("Bearer {}", settings.key()))?,
     );
 
     let (ws, response) = tokio_tungstenite::connect_async(request).await?;
@@ -52,11 +63,13 @@ async fn main() -> anyhow::Result<()> {
     println!("→ {update}");
     write.send(Message::Text(update.to_string().into())).await?;
 
+    let rate = settings.sample_rate();
+    let (append, finish, _) = settings.wire();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
     let stop = Arc::new(AtomicBool::new(false));
     let file = std::path::PathBuf::from(path);
     std::thread::spawn(move || {
-        if let Err(e) = decode::stream_file(&file, tx, stop, |_, _| {}) {
+        if let Err(e) = decode::stream_file(&file, rate, tx, stop, |_, _| {}) {
             eprintln!("decode: {e}");
         }
     });
@@ -69,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
                 bytes.extend_from_slice(&s.to_le_bytes());
             }
             let frame = json!({
-                "type": "input_audio_buffer.append",
+                "type": append,
                 "audio": BASE64_STANDARD.encode(&bytes),
             });
             if write.send(Message::Text(frame.to_string().into())).await.is_err() {
@@ -78,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
             chunks += 1;
         }
         eprintln!("[uplink] sent {chunks} chunks ({}s of audio)", chunks / 10);
-        let _ = write.send(Message::Text(json!({ "type": "session.finish" }).to_string().into())).await;
+        let _ = write.send(Message::Text(json!({ "type": finish }).to_string().into())).await;
     });
 
     let idle = std::time::Duration::from_secs(20);

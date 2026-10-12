@@ -1,4 +1,4 @@
-//! WebSocket client for the Model Studio realtime translation endpoint.
+//! WebSocket client for the realtime translation endpoints (Model Studio and OpenAI).
 //!
 //! This lives in Rust rather than the webview for one hard reason: the endpoint authenticates
 //! with an `Authorization` request header, and the browser `WebSocket` constructor cannot set
@@ -80,14 +80,14 @@ async fn connect_and_pump(
     stop: &Arc<AtomicBool>,
     mut player: Option<Player>,
 ) -> Result<()> {
-    if settings.api_key.trim().is_empty() {
+    if settings.key().trim().is_empty() {
         return Err(anyhow!("API key is empty"));
     }
 
     let mut request = settings.ws_url().into_client_request()?;
     request.headers_mut().insert(
         "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", settings.api_key.trim()))?,
+        HeaderValue::from_str(&format!("Bearer {}", settings.key().trim()))?,
     );
 
     let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(request))
@@ -100,7 +100,8 @@ async fn connect_and_pump(
     write.send(Message::Text(settings.session_update().to_string().into())).await?;
     note(app, "status", "connected");
 
-    // Uplink: PCM chunks -> base64 -> input_audio_buffer.append, until the user stops or
+    let (append, finish, finished) = settings.wire();
+    // Uplink: PCM chunks -> base64 -> append, until the user stops or
     // the source runs out (a file at EOF drops its sender).
     let stop_up = stop.clone();
     let uplink = tokio::spawn(async move {
@@ -113,7 +114,7 @@ async fn connect_and_pump(
                 bytes.extend_from_slice(&s.to_le_bytes());
             }
             let frame = json!({
-                "type": "input_audio_buffer.append",
+                "type": append,
                 "audio": BASE64_STANDARD.encode(&bytes),
             });
             if write.send(Message::Text(frame.to_string().into())).await.is_err() {
@@ -122,9 +123,9 @@ async fn connect_and_pump(
         }
         // Finishing: the reader below switches to the short wait, and capture stops.
         stop_up.store(true, Ordering::Relaxed);
-        let _ = write.send(Message::Text(json!({ "type": "session.finish" }).to_string().into())).await;
+        let _ = write.send(Message::Text(json!({ "type": finish }).to_string().into())).await;
         // Not closed here: a close frame makes the server hang up before the last sentence
-        // is out. The reader closes it once `session.finished` says everything has arrived.
+        // is out. The reader closes it once `finished` says everything has arrived.
         Some(write)
     });
 
@@ -150,10 +151,10 @@ async fn connect_and_pump(
                         }
                     }
                     let _ = app.emit(RAW_EVENT, &value);
-                    if let Some(ev) = text_stream.next(&value) {
+                    for ev in text_stream.next(&value) {
                         emit(app, ev);
                     }
-                    if value.get("type").and_then(Value::as_str) == Some("session.finished") {
+                    if value.get("type").and_then(Value::as_str) == Some(finished) {
                         break;
                     }
                 }
@@ -171,10 +172,11 @@ async fn connect_and_pump(
     Ok(())
 }
 
-/// Pulls the PCM out of a `response.audio.delta` frame and leaves its byte count behind:
+/// Pulls the PCM out of an audio delta frame and leaves its byte count behind:
 /// several KB of base64 ten times a second is no use in the diagnostics drawer.
 fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
-    if v.get("type").and_then(Value::as_str) != Some("response.audio.delta") {
+    let ty = v.get("type").and_then(Value::as_str);
+    if !matches!(ty, Some("response.audio.delta" | "session.output_audio.delta")) {
         return None;
     }
     let delta = v.get_mut("delta")?;
@@ -186,10 +188,72 @@ fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
 #[derive(Default)]
 struct TextStream {
     partial: BTreeMap<(&'static str, String), String>,
+    /// OpenAI only: the one open turn, see [`TextStream::continuous`].
+    turn: u64,
+    open: bool,
+    source: String,
+    target: String,
 }
 
+/// Past this many characters a translation with no sentence end is cut anyway, so a speaker
+/// who never pauses does not grow one endless row.
+const MAX_TURN_CHARS: usize = 150;
+
 impl TextStream {
-    fn next(&mut self, v: &Value) -> Option<Event> {
+    fn next(&mut self, v: &Value) -> Vec<Event> {
+        match v.get("type").and_then(Value::as_str) {
+            Some(ty @ ("session.input_transcript.delta" | "session.output_transcript.delta")) => {
+                let delta = v.get("delta").and_then(Value::as_str).unwrap_or_default();
+                self.continuous(ty == "session.output_transcript.delta", delta)
+            }
+            _ => self.itemised(v).into_iter().collect(),
+        }
+    }
+
+    /// OpenAI sends two bare append-only streams: no turns, no ids, no "done". The frontend's
+    /// turn model needs all three, so they are made up here. Both streams share a turn id, a
+    /// sentence end in the translation closes the turn, and the transcript is cut at its own
+    /// last sentence end with the rest carried into the next turn.
+    // ponytail: punctuation pairing, so a row's source and translation can be a clause apart;
+    // align on `elapsed_ms` if that turns out to matter.
+    fn continuous(&mut self, is_target: bool, delta: &str) -> Vec<Event> {
+        let mut out = Vec::new();
+        if is_target { &mut self.target } else { &mut self.source }.push_str(delta);
+        if is_target {
+            let cut = last_sentence_end(&self.target)
+                .or((self.target.chars().count() > MAX_TURN_CHARS).then_some(self.target.len()));
+            if let Some(cut) = cut {
+                let target_rest = self.target.split_off(cut);
+                let source_cut = last_sentence_end(&self.source).unwrap_or(self.source.len());
+                let source_rest = self.source.split_off(source_cut);
+                self.emit_turn(&mut out, true);
+                self.target = target_rest.trim_start().to_string();
+                self.source = source_rest.trim_start().to_string();
+                self.turn += 1;
+                self.open = false;
+                if self.target.is_empty() && self.source.is_empty() {
+                    return out;
+                }
+            }
+        }
+        self.emit_turn(&mut out, false);
+        out
+    }
+
+    fn emit_turn(&mut self, out: &mut Vec<Event>, done: bool) {
+        let id = format!("oa{}", self.turn);
+        // The frontend files transcripts by link; announcing the turn first gives it a home
+        // even when the transcript runs ahead of the translation, which it usually does.
+        if !self.open {
+            self.open = true;
+            out.push(Event { kind: "link", id: id.clone(), text: id.clone(), ..Default::default() });
+        }
+        for (kind, text) in [("target", &self.target), ("source", &self.source)] {
+            out.push(Event { kind, id: id.clone(), text: text.clone(), done, ..Default::default() });
+        }
+    }
+
+    fn itemised(&mut self, v: &Value) -> Option<Event> {
         let kind = match v.get("type")?.as_str()? {
             "conversation.item.input_audio_transcription.delta" => "source",
             "response.text.delta" | "response.audio_transcript.delta" => "target",
@@ -206,6 +270,21 @@ impl TextStream {
         text.push_str(v.get("delta")?.as_str()?);
         Some(Event { kind, id, text: text.clone(), ..Default::default() })
     }
+}
+
+/// Byte offset just past the last sentence end in `s`. A CJK mark ends a sentence outright; a
+/// "." "!" "?" only once whitespace follows it, so "3.5" stays whole and a final "." waits
+/// for the next delta to say whether it was one.
+fn last_sentence_end(s: &str) -> Option<usize> {
+    let mut chars = s.char_indices().peekable();
+    let mut last = None;
+    while let Some((i, c)) = chars.next() {
+        let spaced = chars.peek().is_some_and(|&(_, n)| n.is_whitespace());
+        if matches!(c, '。' | '！' | '？' | '…') || (matches!(c, '.' | '!' | '?') && spaced) {
+            last = Some(i + c.len_utf8());
+        }
+    }
+    last
 }
 
 fn classify(v: &Value) -> Option<Event> {
@@ -267,7 +346,7 @@ fn classify(v: &Value) -> Option<Event> {
         "input_audio_buffer.speech_started" => Event { kind: "speech", text: "start".into(), ..Default::default() },
         "input_audio_buffer.speech_stopped" => Event { kind: "speech", text: "stop".into(), ..Default::default() },
         "session.created" | "session.updated" => Event { kind: "status", text: "connected".into(), ..Default::default() },
-        "session.finished" => Event { kind: "status", text: "closed".into(), ..Default::default() },
+        "session.finished" | "session.closed" => Event { kind: "status", text: "closed".into(), ..Default::default() },
         // A server `error` frame (e.g. "previous turn is still processing") does not end
         // the session — surfacing it as a fatal error would wrongly stop the stream.
         "error" => Event {
@@ -299,12 +378,12 @@ mod tests {
             ("response.text.delta", "target1", "好。", "早上好。"),
             ("conversation.item.input_audio_transcription.delta", "source1", "morning.", "Good morning."),
         ] {
-            let ev = stream.next(&json!({ "type": kind, "item_id": item, "delta": delta })).unwrap();
+            let ev = stream.next(&json!({ "type": kind, "item_id": item, "delta": delta })).pop().unwrap();
             assert_eq!(ev.text, expected);
             assert_eq!(ev.id, item);
             assert!(!ev.done);
         }
-        let done = stream.next(&json!({ "type": "response.text.done", "item_id": "target1", "text": "早上好。" })).unwrap();
+        let done = stream.next(&json!({ "type": "response.text.done", "item_id": "target1", "text": "早上好。" })).pop().unwrap();
         assert_eq!(done.text, "早上好。");
         assert!(done.done);
         assert!(!stream.partial.contains_key(&("target", "target1".into())));
@@ -406,6 +485,64 @@ mod tests {
         assert_eq!(take_audio(&mut v).unwrap(), vec![1, 0, 255, 127]);
         assert_eq!(v["delta"], "<4 bytes>");
         assert!(take_audio(&mut json!({ "type": "response.text.text", "delta": "AAAA" })).is_none());
+        let mut oa = json!({ "type": "session.output_audio.delta", "delta": BASE64_STANDARD.encode([9u8, 9]) });
+        assert_eq!(take_audio(&mut oa).unwrap(), vec![9, 9]);
+    }
+
+    fn oa(stream: &mut TextStream, ty: &str, delta: &str) -> Vec<Event> {
+        stream.next(&json!({ "type": format!("session.{ty}_transcript.delta"), "delta": delta, "elapsed_ms": 200 }))
+    }
+
+    fn done_pair(evs: &[Event]) -> Option<(String, String, String)> {
+        let t = evs.iter().find(|e| e.kind == "target" && e.done)?;
+        let s = evs.iter().find(|e| e.kind == "source" && e.done)?;
+        assert_eq!(t.id, s.id);
+        Some((t.id.clone(), t.text.clone(), s.text.clone()))
+    }
+
+    #[test]
+    fn openai_streams_are_cut_into_turns_at_sentence_ends() {
+        let mut st = TextStream::default();
+        // The transcript runs ahead; the turn is announced so it has somewhere to go.
+        let first = oa(&mut st, "input", "Good morning.");
+        assert_eq!(first[0].kind, "link");
+        assert_eq!(first[0].id, "oa0");
+        assert_eq!(first[0].text, "oa0");
+        oa(&mut st, "input", " Welcome to");
+        assert!(done_pair(&oa(&mut st, "output", "早上")).is_none());
+        // A CJK full stop closes the turn at once; the transcript keeps its unfinished tail.
+        let evs = oa(&mut st, "output", "好。");
+        assert_eq!(done_pair(&evs).unwrap(), ("oa0".into(), "早上好。".into(), "Good morning.".into()));
+        // The carried-over tail opens the next turn straight away.
+        assert!(evs.iter().any(|e| e.kind == "link" && e.id == "oa1"));
+        let next = oa(&mut st, "input", " the call");
+        let src = next.iter().find(|e| e.kind == "source").unwrap();
+        assert_eq!((src.id.as_str(), src.text.as_str()), ("oa1", "Welcome to the call"));
+    }
+
+    #[test]
+    fn a_latin_full_stop_waits_for_the_space_after_it() {
+        let mut st = TextStream::default();
+        oa(&mut st, "output", "Version 3.");
+        assert!(done_pair(&oa(&mut st, "output", "5 is out.")).is_none());
+        let evs = oa(&mut st, "output", " Next");
+        assert_eq!(done_pair(&evs).unwrap().1, "Version 3.5 is out.");
+        // The word after the stop opens the next turn rather than vanishing.
+        let carried = evs.iter().rev().find(|e| e.kind == "target").unwrap();
+        assert_eq!((carried.id.as_str(), carried.text.as_str(), carried.done), ("oa1", "Next", false));
+    }
+
+    #[test]
+    fn a_turn_with_no_sentence_end_is_still_cut() {
+        let mut st = TextStream::default();
+        let long = "啊".repeat(MAX_TURN_CHARS + 1);
+        assert_eq!(done_pair(&oa(&mut st, "output", &long)).unwrap().1, long);
+    }
+
+    #[test]
+    fn session_closed_ends_the_session_like_finished() {
+        let ev = classify(&json!({ "type": "session.closed", "event_id": "e" })).unwrap();
+        assert_eq!((ev.kind, ev.text.as_str()), ("status", "closed"));
     }
 
     #[test]

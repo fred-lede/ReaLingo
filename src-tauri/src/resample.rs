@@ -1,13 +1,16 @@
-//! Streaming sample-rate conversion to 16 kHz mono i16 (what the model wants).
+//! Streaming sample-rate conversion to the mono i16 rate the model wants (16 kHz for Qwen,
+//! 24 kHz for OpenAI — see `Settings::sample_rate`).
 //!
 //! Direct windowed-sinc resampler: for each output sample we evaluate a Blackman-windowed
 //! sinc centred on the fractional input position, with the cutoff pinned to the *lower* of
 //! the two Nyquist frequencies. That gives real anti-aliasing for arbitrary ratios
 //! (48000/16000 = 3, but 44100/16000 = 2.75625), which naive decimation does not.
 
-pub const TARGET_RATE: u32 = 16_000;
-/// 100 ms at 16 kHz — the chunk size the realtime API examples use.
-pub const CHUNK_SAMPLES: usize = 1600;
+/// 100 ms at `rate` — the chunk size the Qwen examples use. OpenAI wants 200 ms frames but
+/// buffers shorter chunks itself, so one size serves both.
+pub fn chunk_samples(rate: u32) -> usize {
+    rate as usize / 10
+}
 
 const HALF: usize = 16; // 32 taps; plenty for speech
 
@@ -106,6 +109,8 @@ pub fn downmix(interleaved: &[f32], channels: usize, out: &mut Vec<f32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TARGET_RATE: u32 = 16_000;
 
     fn rms(v: &[i16]) -> f64 {
         (v.iter().map(|&s| (s as f64 / 32767.0).powi(2)).sum::<f64>() / v.len() as f64).sqrt()

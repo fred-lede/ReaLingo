@@ -7,6 +7,9 @@ pub const MODEL_QWEN3_8: &str = "qwen3.8-livetranslate-flash-realtime";
 /// pickers accordingly so a session cannot be opened with a target it will reject.
 pub const MODEL_QWEN3: &str = "qwen3-livetranslate-flash-realtime";
 pub const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
+pub const MODEL_OPENAI: &str = "gpt-realtime-translate";
+/// Without a transcription model the OpenAI session sends no source transcript at all.
+pub const OPENAI_ASR_MODEL: &str = "gpt-realtime-whisper";
 /// The service's own default; any name from the Model Studio voice list works.
 pub const VOICE: &str = "Tina";
 
@@ -18,11 +21,30 @@ pub enum Region {
     Singapore,
 }
 
+/// Which wire protocol to speak. Model and URL are free-form on top of it, so any service
+/// that talks one of these protocols can be pointed at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    #[default]
+    Qwen,
+    Openai,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)]
+    pub provider: Provider,
+    /// The Qwen key; named before there was a second provider.
+    #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub openai_key: String,
+    /// Optional. Empty => the provider's own endpoint; set => dialled as-is, plus `model=`
+    /// unless the URL already carries one.
+    #[serde(default)]
+    pub url: String,
     /// Optional. Empty => the shared public endpoint; set => the workspace's dedicated domain.
     #[serde(default)]
     pub workspace_id: String,
@@ -62,7 +84,57 @@ fn en() -> String {
 }
 
 impl Settings {
+    pub fn key(&self) -> &str {
+        match self.provider {
+            Provider::Qwen => &self.api_key,
+            Provider::Openai => &self.openai_key,
+        }
+    }
+
+    pub fn key_mut(&mut self) -> &mut String {
+        match self.provider {
+            Provider::Qwen => &mut self.api_key,
+            Provider::Openai => &mut self.openai_key,
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        match (self.model.trim(), self.provider) {
+            ("", Provider::Qwen) => MODEL_QWEN3_5,
+            ("", Provider::Openai) => MODEL_OPENAI,
+            (m, _) => m,
+        }
+    }
+
+    /// What the uplink must send: Qwen takes 16 kHz, OpenAI rejects anything but 24 kHz.
+    pub fn sample_rate(&self) -> u32 {
+        match self.provider {
+            Provider::Qwen => 16_000,
+            Provider::Openai => 24_000,
+        }
+    }
+
+    /// Event types for (append audio, finish, server says finished).
+    pub fn wire(&self) -> (&'static str, &'static str, &'static str) {
+        match self.provider {
+            Provider::Qwen => ("input_audio_buffer.append", "session.finish", "session.finished"),
+            Provider::Openai => ("session.input_audio_buffer.append", "session.close", "session.closed"),
+        }
+    }
+
     pub fn ws_url(&self) -> String {
+        let model = self.model();
+        let custom = self.url.trim();
+        if !custom.is_empty() {
+            if custom.contains("model=") {
+                return custom.to_string();
+            }
+            let sep = if custom.contains('?') { '&' } else { '?' };
+            return format!("{custom}{sep}model={model}");
+        }
+        if self.provider == Provider::Openai {
+            return format!("wss://api.openai.com/v1/realtime/translations?model={model}");
+        }
         let ws = self.workspace_id.trim();
         let host = match (self.region, ws.is_empty()) {
             (Region::Beijing, true) => "dashscope.aliyuncs.com".to_string(),
@@ -70,13 +142,25 @@ impl Settings {
             (Region::Singapore, true) => "dashscope-intl.aliyuncs.com".to_string(),
             (Region::Singapore, false) => format!("{ws}.ap-southeast-1.maas.aliyuncs.com"),
         };
-        let model = if self.model.is_empty() { MODEL_QWEN3_5 } else { &self.model };
         format!("wss://{host}/api-ws/v1/realtime?model={model}")
     }
 
     /// The `session.update` payload. Text always (it drives the subtitles); audio on top when
     /// speaking, which arrives as 24 kHz mono PCM16 in `response.audio.delta`.
     pub fn session_update(&self) -> serde_json::Value {
+        // Source language, hotwords, voice and VAD have no OpenAI counterpart; the source is
+        // always detected. Audio is always produced — `speak` only decides whether we play it.
+        if self.provider == Provider::Openai {
+            return serde_json::json!({
+                "type": "session.update",
+                "session": {
+                    "audio": {
+                        "input": { "transcription": { "model": OPENAI_ASR_MODEL } },
+                        "output": { "language": self.target_lang }
+                    }
+                }
+            });
+        }
         let mut transcription = serde_json::json!({ "model": ASR_MODEL });
         // Omitting `language` is what tells the model to auto-detect the source.
         if self.source_lang != "auto" && !self.source_lang.is_empty() {
@@ -90,7 +174,7 @@ impl Settings {
         }
         // Qwen3.8 supplies source transcription automatically. Its session schema uses
         // output_modalities and nested audio settings, not the earlier ASR/VAD fields.
-        if self.model == MODEL_QWEN3_8 {
+        if self.model() == MODEL_QWEN3_8 {
             return serde_json::json!({
                 "type": "session.update",
                 "session": {
@@ -144,7 +228,10 @@ mod tests {
 
     fn s(region: Region, workspace_id: &str) -> Settings {
         Settings {
+            provider: Provider::Qwen,
             api_key: "k".into(),
+            openai_key: "o".into(),
+            url: String::new(),
             workspace_id: workspace_id.into(),
             region,
             source_lang: "auto".into(),
@@ -261,5 +348,35 @@ mod tests {
         assert_eq!(settings.ws_url(), format!("wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={MODEL_QWEN3_8}"));
         settings.region = Region::Singapore;
         assert_eq!(settings.ws_url(), format!("wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model={MODEL_QWEN3_8}"));
+    }
+
+    #[test]
+    fn openai_speaks_its_own_protocol() {
+        let mut o = s(Region::Singapore, "llm-abc");
+        o.provider = Provider::Openai;
+        o.model.clear();
+        o.target_lang = "zh".into();
+        assert_eq!(o.ws_url(), "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate");
+        assert_eq!(o.key(), "o");
+        assert_eq!(o.sample_rate(), 24_000);
+        assert_eq!(o.wire().0, "session.input_audio_buffer.append");
+        let session = &o.session_update()["session"];
+        assert_eq!(session["audio"]["output"]["language"], "zh");
+        assert_eq!(session["audio"]["input"]["transcription"]["model"], OPENAI_ASR_MODEL);
+        assert!(session.get("translation").is_none());
+    }
+
+    #[test]
+    fn custom_url_is_dialled_as_is_plus_model() {
+        let mut c = s(Region::Beijing, "");
+        c.url = " wss://proxy.example/v1/rt ".into();
+        assert_eq!(c.ws_url(), format!("wss://proxy.example/v1/rt?model={MODEL_QWEN3_5}"));
+        c.url = "wss://proxy.example/rt?x=1".into();
+        assert_eq!(c.ws_url(), format!("wss://proxy.example/rt?x=1&model={MODEL_QWEN3_5}"));
+        c.url = "wss://proxy.example/rt?model=mine".into();
+        assert_eq!(c.ws_url(), "wss://proxy.example/rt?model=mine");
+        c.model = " my-model ".into();
+        c.url.clear();
+        assert!(c.ws_url().ends_with("?model=my-model"));
     }
 }

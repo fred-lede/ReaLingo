@@ -14,7 +14,7 @@ mod tray;
 mod wasapi;
 
 use audio::DeviceInfo;
-use config::Settings;
+use config::{Provider, Settings};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -60,13 +60,13 @@ fn platform() -> Platform {
 }
 
 #[tauri::command]
-fn get_api_key() -> String {
-    secret::get().unwrap_or_default()
+fn get_api_key(provider: Provider) -> String {
+    secret::get(provider).unwrap_or_default()
 }
 
 #[tauri::command]
-fn set_api_key(key: String) -> Result<(), String> {
-    secret::set(&key)
+fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
+    secret::set(provider, &key)
 }
 
 #[tauri::command]
@@ -96,8 +96,8 @@ fn start_stream(
 
     // The credential store wins over whatever the webview sent, so on a machine that has
     // one the key never has to travel through the frontend at all.
-    if let Some(key) = secret::get() {
-        settings.api_key = key;
+    if let Some(key) = secret::get(settings.provider) {
+        *settings.key_mut() = key;
     }
 
     // Before capture: on macOS the process has to be a Core Audio client already for the
@@ -116,7 +116,7 @@ fn start_stream(
     match source {
         Source::Device { id } => {
             // Only needed when we make sound ourselves; otherwise the plain loopback path.
-            audio::start(&id, tx, state.level.clone(), stop.clone(), settings.speak)
+            audio::start(&id, settings.sample_rate(), tx, state.level.clone(), stop.clone(), settings.speak)
                 .map_err(|e| e.to_string())?;
         }
         Source::File { path } => {
@@ -124,9 +124,9 @@ fn start_stream(
             if !path.is_file() {
                 return Err(format!("file not found: {}", path.display()));
             }
-            let (app2, stop2) = (app.clone(), stop.clone());
+            let (app2, stop2, rate) = (app.clone(), stop.clone(), settings.sample_rate());
             tauri::async_runtime::spawn_blocking(move || {
-                let result = decode::stream_file(&path, tx, stop2, |sent, total| {
+                let result = decode::stream_file(&path, rate, tx, stop2, |sent, total| {
                     let text = match total {
                         Some(t) => format!("{sent:.1}/{t:.1}"),
                         None => format!("{sent:.1}/?"),

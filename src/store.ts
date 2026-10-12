@@ -32,8 +32,18 @@ export interface SubtitleStyle {
   locked: boolean; // click-through
 }
 
+/** The wire protocol. Model and URL are free-form on top of it. */
+export type Provider = "qwen" | "openai";
+
+/** Where each provider's key lives in `Settings`; Qwen's predates there being two. */
+const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey" } as const;
+
 export interface Settings {
+  provider: Provider;
   apiKey: string;
+  openaiKey: string;
+  /** Empty: the provider's default endpoint. */
+  url: string;
   workspaceId: string;
   region: Region;
   sourceLang: string;
@@ -51,7 +61,10 @@ export interface Settings {
 }
 
 export const settings = reactive<Settings>({
+  provider: "qwen",
   apiKey: "",
+  openaiKey: "",
+  url: "",
   workspaceId: "",
   region: "beijing",
   sourceLang: "auto",
@@ -102,30 +115,45 @@ export async function initSettings(persist = true) {
     // Anything still in the file is from a build that predates the credential store (or a
     // hand-edited config). Move it across and blank it out — leaving the plaintext copy
     // behind would make the whole exercise pointless.
-    if (settings.apiKey) await invoke("set_api_key", { key: settings.apiKey });
-    else settings.apiKey = await invoke<string>("get_api_key");
+    for (const [provider, field] of Object.entries(KEY_FIELD)) {
+      if (settings[field]) await invoke("set_api_key", { provider, key: settings[field] });
+      else settings[field] = await invoke<string>("get_api_key", { provider });
+    }
   }
 
   applyTheme();
   if (persist) {
     watch(settings, (v) => void store?.set(KEY, persistable(v)), { deep: true });
-    if (keyringOk.value) watch(() => settings.apiKey, saveApiKey);
+    if (keyringOk.value) {
+      for (const [provider, field] of Object.entries(KEY_FIELD)) {
+        watch(() => settings[field], (key) => saveApiKey(provider, key));
+      }
+    }
   }
   watch(() => settings.theme, applyTheme);
 }
 
-/** What goes to settings.json — never the API key once the credential store holds it. */
+/** The key of the provider in use — the one a session will actually send. */
+export function activeKey(): string {
+  return settings[KEY_FIELD[settings.provider]];
+}
+
+export function setActiveKey(key: string) {
+  settings[KEY_FIELD[settings.provider]] = key;
+}
+
+/** What goes to settings.json — never an API key once the credential store holds it. */
 function persistable(v: Settings) {
   const plain = JSON.parse(JSON.stringify(v)) as Settings;
-  if (keyringOk.value) plain.apiKey = "";
+  if (keyringOk.value) for (const field of Object.values(KEY_FIELD)) plain[field] = "";
   return plain;
 }
 
 // Debounced: one credential-store write per pause, not one per keystroke.
-let keyTimer: number | undefined;
-function saveApiKey(key: string) {
-  clearTimeout(keyTimer);
-  keyTimer = window.setTimeout(() => void invoke("set_api_key", { key }), 400);
+const keyTimers: Record<string, number | undefined> = {};
+function saveApiKey(provider: string, key: string) {
+  clearTimeout(keyTimers[provider]);
+  keyTimers[provider] = window.setTimeout(() => void invoke("set_api_key", { provider, key }), 400);
 }
 
 const dark = window.matchMedia("(prefers-color-scheme: dark)");

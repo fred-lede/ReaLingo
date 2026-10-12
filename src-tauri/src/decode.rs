@@ -1,4 +1,4 @@
-//! Decode a local audio file into the same 16 kHz mono PCM stream the microphone produces,
+//! Decode a local audio file into the same mono PCM stream the microphone produces,
 //! then feed it to the socket at roughly real time (the endpoint is a live translator, not a
 //! batch API — firing a whole file at it in one go just overruns its buffer).
 
@@ -15,7 +15,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use tokio::sync::mpsc::Sender;
 
-use crate::resample::{downmix, Resampler, CHUNK_SAMPLES, TARGET_RATE};
+use crate::resample::{chunk_samples, downmix, Resampler};
 
 /// Slightly faster than real time: enough headroom to finish a file sooner without
 /// outrunning the server's input buffer.
@@ -24,6 +24,7 @@ const CHUNK_PACE: Duration = Duration::from_millis(80);
 /// Blocking — call from `spawn_blocking`. `progress` gets (seconds_sent, total_seconds_or_none).
 pub fn stream_file(
     path: &Path,
+    rate: u32,
     tx: Sender<Vec<i16>>,
     stop: Arc<AtomicBool>,
     mut progress: impl FnMut(f64, Option<f64>),
@@ -64,6 +65,7 @@ pub fn stream_file(
     let mut mono: Vec<f32> = Vec::new();
     let mut pcm: Vec<i16> = Vec::new();
     let mut sent_samples: u64 = 0;
+    let chunk_len = chunk_samples(rate);
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -88,7 +90,7 @@ pub fn stream_file(
 
         let spec = buf.spec();
         let channels = spec.channels().count().max(1);
-        let resampler = resampler.get_or_insert_with(|| Resampler::new(spec.rate(), TARGET_RATE));
+        let resampler = resampler.get_or_insert_with(|| Resampler::new(spec.rate(), rate));
 
         interleaved.resize(buf.samples_interleaved(), 0.0);
         buf.copy_to_slice_interleaved(&mut interleaved[..]);
@@ -97,16 +99,16 @@ pub fn stream_file(
         downmix(&interleaved, channels, &mut mono);
         resampler.push(&mono, &mut pcm);
 
-        while pcm.len() >= CHUNK_SAMPLES {
+        while pcm.len() >= chunk_len {
             if stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            let chunk: Vec<i16> = pcm.drain(..CHUNK_SAMPLES).collect();
+            let chunk: Vec<i16> = pcm.drain(..chunk_len).collect();
             if tx.blocking_send(chunk).is_err() {
                 return Ok(()); // socket closed
             }
-            sent_samples += CHUNK_SAMPLES as u64;
-            progress(sent_samples as f64 / TARGET_RATE as f64, total_secs);
+            sent_samples += chunk_len as u64;
+            progress(sent_samples as f64 / rate as f64, total_secs);
             std::thread::sleep(CHUNK_PACE);
         }
     }

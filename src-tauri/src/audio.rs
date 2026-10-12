@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
-use crate::resample::{downmix, Resampler, CHUNK_SAMPLES, TARGET_RATE};
+use crate::resample::{chunk_samples, downmix, Resampler};
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +145,7 @@ fn find(id: &str) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
 /// the stream is actually running, so the caller learns about device errors immediately.
 pub fn start(
     id: &str,
+    rate: u32,
     tx: Sender<Vec<i16>>,
     level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
@@ -154,12 +155,12 @@ pub fn start(
     // thread and reports failure synchronously already.
     #[cfg(target_os = "linux")]
     if let Some(source) = id.strip_prefix(SYS).and_then(|r| r.strip_prefix(SEP)) {
-        return crate::pulse::start(source, tx, level, stop);
+        return crate::pulse::start(source, rate, tx, level, stop);
     }
 
     #[cfg(windows)]
     if exclude_self && is_default_output(id) {
-        let pipe = Pipe::new(crate::wasapi::RATE, crate::wasapi::CHANNELS as usize, tx, level);
+        let pipe = Pipe::new(crate::wasapi::RATE, crate::wasapi::CHANNELS as usize, rate, tx, level);
         return crate::wasapi::start(pipe, stop);
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -187,7 +188,7 @@ pub fn start(
                 return;
             }
         };
-        let stream = match build(&id, tx, level) {
+        let stream = match build(&id, rate, tx, level) {
             Ok(s) => s,
             Err(e) => {
                 let _ = ready_tx.send(Err(e.to_string()));
@@ -223,14 +224,14 @@ fn is_default_output(id: &str) -> bool {
         .is_some_and(|d| d.to_string() == target)
 }
 
-fn build(id: &str, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>) -> Result<cpal::Stream> {
+fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>) -> Result<cpal::Stream> {
     let (device, supported) = find(id)?;
     let sample_format = supported.sample_format();
     let channels = supported.channels() as usize;
     let in_rate = supported.sample_rate();
     let config: cpal::StreamConfig = supported.into();
 
-    let mut pipe = Pipe::new(in_rate, channels, tx, level);
+    let mut pipe = Pipe::new(in_rate, channels, rate, tx, level);
     let sink = move |frames: &[f32]| pipe.feed(frames);
 
     match sample_format {
@@ -266,22 +267,24 @@ where
     Ok(stream)
 }
 
-/// Interleaved device frames -> mono -> 16 kHz -> 100 ms chunks on the channel.
+/// Interleaved device frames -> mono -> model rate -> 100 ms chunks on the channel.
 pub(crate) struct Pipe {
     resampler: Resampler,
     mono: Vec<f32>,
     pcm: Vec<i16>,
+    chunk: usize,
     channels: usize,
     tx: Sender<Vec<i16>>,
     level: Arc<AtomicU32>,
 }
 
 impl Pipe {
-    pub(crate) fn new(in_rate: u32, channels: usize, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>) -> Self {
+    pub(crate) fn new(in_rate: u32, channels: usize, out_rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>) -> Self {
         Self {
-            resampler: Resampler::new(in_rate, TARGET_RATE),
+            resampler: Resampler::new(in_rate, out_rate),
             mono: Vec::new(),
             pcm: Vec::new(),
+            chunk: chunk_samples(out_rate),
             channels,
             tx,
             level,
@@ -296,8 +299,8 @@ impl Pipe {
         self.level.store(peak.to_bits(), Ordering::Relaxed);
 
         self.resampler.push(&self.mono, &mut self.pcm);
-        while self.pcm.len() >= CHUNK_SAMPLES {
-            let chunk: Vec<i16> = self.pcm.drain(..CHUNK_SAMPLES).collect();
+        while self.pcm.len() >= self.chunk {
+            let chunk: Vec<i16> = self.pcm.drain(..self.chunk).collect();
             // Never block the audio thread: if the uplink is backed up, drop the chunk.
             if self.tx.try_send(chunk).is_err() {
                 break;

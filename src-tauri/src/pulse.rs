@@ -8,7 +8,7 @@
 //!   - `pactl list sources` enumerates every source, monitors included. A monitor is the one
 //!     with a "Monitor of Sink" line — precisely the "record what this output plays" device.
 //!   - `parec` records one of them and writes raw PCM to stdout. Asking it for
-//!     s16le/16000/mono means the sound server does the downmix and resampling, so samples
+//!     s16le/<model rate>/mono means the sound server does the downmix and resampling, so samples
 //!     arrive in exactly the shape the uplink wants and skip our own pipeline.
 //!
 //! These tools speak the PulseAudio protocol, which PipeWire also serves (pipewire-pulse),
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
-use crate::resample::{CHUNK_SAMPLES, TARGET_RATE};
+use crate::resample::chunk_samples;
 
 /// `pactl` with translation switched off.
 ///
@@ -123,6 +123,7 @@ fn parse_sources(text: &str) -> Vec<Monitor> {
 /// has been spawned, so a missing binary surfaces as a start error rather than as silence.
 pub fn start(
     source: &str,
+    rate: u32,
     tx: Sender<Vec<i16>>,
     level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
@@ -132,7 +133,7 @@ pub fn start(
             "-d",
             source,
             "--format=s16le",
-            &format!("--rate={TARGET_RATE}"),
+            &format!("--rate={rate}"),
             "--channels=1",
             // Without this parec buffers to its own default, adding latency we could not
             // then remove downstream.
@@ -149,7 +150,7 @@ pub fn start(
         .ok_or_else(|| anyhow!("parec produced no output stream"))?;
 
     std::thread::spawn(move || {
-        let mut raw = vec![0u8; CHUNK_SAMPLES * 2];
+        let mut raw = vec![0u8; chunk_samples(rate) * 2];
         while !stop.load(Ordering::Relaxed) {
             if read_exact_or_eof(&mut stdout, &mut raw).is_err() {
                 break; // parec exited: the source vanished, or we are shutting down

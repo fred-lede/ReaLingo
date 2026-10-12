@@ -15,21 +15,31 @@
 
 use keyring::Entry;
 
+use crate::config::Provider;
+
 const SERVICE: &str = "com.nosugark.realingo";
-const USER: &str = "api-key";
+
+/// One slot per provider, so switching never sends one vendor's key to the other. Qwen keeps
+/// the original name: keys saved before there was a second provider stay where they are.
+fn user(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Qwen => "api-key",
+        Provider::Openai => "api-key-openai",
+    }
+}
 
 /// Whether this machine has a usable credential store. Probed once by keyring itself.
 pub fn available() -> bool {
     Entry::store_status().is_ok()
 }
 
-pub fn get() -> Option<String> {
-    get_as(USER)
+pub fn get(provider: Provider) -> Option<String> {
+    get_as(user(provider))
 }
 
 /// An empty key deletes the entry — "clear the field" has to actually clear it.
-pub fn set(key: &str) -> Result<(), String> {
-    set_as(USER, key)
+pub fn set(provider: Provider, key: &str) -> Result<(), String> {
+    set_as(user(provider), key)
 }
 
 fn get_as(user: &str) -> Option<String> {

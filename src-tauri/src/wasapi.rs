@@ -159,7 +159,7 @@ mod tests {
         let id = audio::default_device_id(true).expect("no default output");
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let stop = Arc::new(AtomicBool::new(false));
-        audio::start(&id, tx, Arc::new(AtomicU32::new(0)), stop.clone(), exclude_self).unwrap();
+        audio::start(&id, 16_000, tx, Arc::new(AtomicU32::new(0)), stop.clone(), exclude_self).unwrap();
         std::thread::sleep(Duration::from_secs(1));
         stop.store(true, Ordering::Relaxed);
         // Let the capture thread wind down: teardown is where a bad free would surface.

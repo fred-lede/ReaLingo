@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch, toRaw } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { keyringOk, settings, type Region, type Theme } from "../store";
+import { activeKey, keyringOk, setActiveKey, settings, type Provider, type Region, type Theme } from "../store";
 import { isRunning } from "../stream";
-import { MODEL_QWEN3, MODEL_QWEN3_5, MODEL_QWEN3_8 } from "../languages";
+import { MODEL_OPENAI, MODEL_QWEN3, MODEL_QWEN3_5, MODEL_QWEN3_8 } from "../languages";
 import { locale, setLocale, t, type Locale } from "../i18n";
 import Picker from "./Picker.vue";
 import Sheet from "./Sheet.vue";
@@ -15,7 +15,7 @@ const endpoint = ref("");
 // so only what is read synchronously is tracked — and a field missing from that list makes
 // the preview silently lag one change behind.
 watch(
-  () => [settings.region, settings.workspaceId, settings.model],
+  () => [settings.provider, settings.url, settings.region, settings.workspaceId, settings.model],
   async () => {
     endpoint.value = await invoke<string>("endpoint_url", { settings: toRaw(settings) });
   },
@@ -45,17 +45,53 @@ watch(hotwordText, (text) => {
 });
 const hotwordCount = computed(() => Object.keys(settings.hotwords).length);
 
-const modelOptions = computed(() => [
-  { value: MODEL_QWEN3_8, label: t("modelQwen3_8"), note: "60" },
-  { value: MODEL_QWEN3_5, label: t("modelQwen3_5"), note: "60" },
-  { value: MODEL_QWEN3, label: t("modelQwen3"), note: "18" },
-]);
+const isOpenai = computed(() => settings.provider === "openai");
+
+const presets = computed(() =>
+  isOpenai.value
+    ? [{ value: MODEL_OPENAI, label: t("modelOpenai"), note: "13" }]
+    : [
+        { value: MODEL_QWEN3_8, label: t("modelQwen3_8"), note: "60" },
+        { value: MODEL_QWEN3_5, label: t("modelQwen3_5"), note: "60" },
+        { value: MODEL_QWEN3, label: t("modelQwen3"), note: "18" },
+      ]
+);
+const CUSTOM = "\0custom";
+const modelOptions = computed(() => [...presets.value, { value: CUSTOM, label: t("modelCustom") }]);
+// Its own flag rather than "model is not a preset": typing a preset's name into the custom
+// field must not snap the picker back and take the field away mid-edit.
+const customModel = ref(!presets.value.some((p) => p.value === settings.model));
+const modelPick = computed({
+  get: () => (customModel.value ? CUSTOM : settings.model),
+  set: (v: string) => {
+    customModel.value = v === CUSTOM;
+    if (v !== CUSTOM) settings.model = v;
+  },
+});
+
+const apiKey = computed({ get: activeKey, set: setActiveKey });
+
+/** A model or URL meant for one protocol is wrong for the other, so both start over. */
+function pickProvider(p: Provider) {
+  if (p === settings.provider) return;
+  settings.provider = p;
+  settings.model = p === "openai" ? MODEL_OPENAI : MODEL_QWEN3_5;
+  settings.url = "";
+  customModel.value = false;
+}
+
+const providers: [Provider, "providerQwen" | "providerOpenai"][] = [
+  ["qwen", "providerQwen"],
+  ["openai", "providerOpenai"],
+];
 
 /** The console page differs per region, and the intl one is English-only. */
 const keyConsole = computed(() =>
-  settings.region === "singapore"
-    ? "https://bailian.console.alibabacloud.com/?tab=model#/api-key"
-    : "https://bailian.console.aliyun.com/?tab=model#/api-key"
+  isOpenai.value
+    ? "https://platform.openai.com/api-keys"
+    : settings.region === "singapore"
+      ? "https://bailian.console.alibabacloud.com/?tab=model#/api-key"
+      : "https://bailian.console.aliyun.com/?tab=model#/api-key"
 );
 // The opener plugin, not an <a href>: a plain link navigates the app's own webview away.
 const openConsole = () => invoke("plugin:opener|open_url", { url: keyConsole.value });
@@ -73,22 +109,54 @@ const themes: [Theme, "themeSystem" | "themeLight" | "themeDark"][] = [
 
 <template>
   <Sheet :title="t('settings')" @close="$emit('close')">
+        <div class="field">
+          <span class="label">{{ t("provider") }}</span>
+          <div class="seg">
+            <button
+              v-for="[value, key] in providers"
+              :key="value"
+              :class="{ on: settings.provider === value }"
+              :disabled="isRunning()"
+              @click="pickProvider(value)"
+            >
+              {{ t(key) }}
+            </button>
+          </div>
+          <small>{{ t("providerHint") }}</small>
+        </div>
+
         <label class="field">
           <span class="label">{{ t("apiKey") }}</span>
-          <input v-model="settings.apiKey" type="password" placeholder="sk-..." spellcheck="false" />
+          <input v-model="apiKey" type="password" placeholder="sk-..." spellcheck="false" />
           <small>
             {{ keyringOk ? t("apiKeyHint") : t("apiKeyPlain") }}
-            <button class="link" @click.prevent="openConsole">{{ t("apiKeyGet") }} ↗</button>
+            <button class="link" @click.prevent="openConsole">
+              {{ isOpenai ? t("apiKeyGetOpenai") : t("apiKeyGet") }} ↗
+            </button>
           </small>
         </label>
 
         <div class="field">
           <span class="label">{{ t("model") }}</span>
-          <Picker v-model="settings.model" :options="modelOptions" :disabled="isRunning()" />
-          <small>{{ t("modelHint") }}</small>
+          <Picker v-model="modelPick" :options="modelOptions" :disabled="isRunning()" />
+          <input
+            v-if="customModel"
+            v-model.trim="settings.model"
+            type="text"
+            :placeholder="t('modelCustomPh')"
+            :disabled="isRunning()"
+            spellcheck="false"
+          />
+          <small v-if="!isOpenai">{{ t("modelHint") }}</small>
         </div>
 
         <label class="field">
+          <span class="label">{{ t("url") }}</span>
+          <input v-model.trim="settings.url" type="text" placeholder="wss://..." :disabled="isRunning()" spellcheck="false" />
+          <small>{{ t("urlHint") }}</small>
+        </label>
+
+        <label v-if="!isOpenai" class="field">
           <span class="label">{{ t("hotwords") }}</span>
           <textarea
             v-model="hotwordText"
@@ -103,7 +171,7 @@ const themes: [Theme, "themeSystem" | "themeLight" | "themeDark"][] = [
           </small>
         </label>
 
-        <label class="field">
+        <label v-if="!isOpenai" class="field">
           <span class="label">{{ t("region") }}</span>
           <div class="seg">
             <button
@@ -117,7 +185,7 @@ const themes: [Theme, "themeSystem" | "themeLight" | "themeDark"][] = [
           </div>
         </label>
 
-        <label class="field">
+        <label v-if="!isOpenai" class="field">
           <span class="label">{{ t("workspace") }}</span>
           <input v-model="settings.workspaceId" type="text" placeholder="llm-xxxxxxxx" spellcheck="false" />
           <small>{{ t("workspaceHint") }}</small>
