@@ -6,8 +6,9 @@
 //!   cargo run --example probe -- path\to\audio.wav [target_lang] [model]
 //!   set DASHSCOPE_WORKSPACE_ID=llm-...   (optional dedicated endpoint)
 //!   set OPENAI_API_KEY=sk-...            (instead: probe OpenAI gpt-realtime-translate)
+//!   set PROBE_PROTOCOL=qwen38            (qwen35 | qwen38 | openai; default follows the key)
 
-use realingo_lib::config::{Provider, Region, Settings};
+use realingo_lib::config::{Protocol, Region, Settings};
 use realingo_lib::decode;
 
 use base64::prelude::{Engine, BASE64_STANDARD};
@@ -24,7 +25,12 @@ async fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: probe <audio file> [target lang] [model]");
     let target = std::env::args().nth(2).unwrap_or_else(|| "zh".into());
     let openai_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-    let provider = if openai_key.is_empty() { Provider::Qwen } else { Provider::Openai };
+    let protocol = match std::env::var("PROBE_PROTOCOL").as_deref() {
+        Ok("qwen38") => Protocol::Qwen38,
+        Ok("qwen35") => Protocol::Qwen35,
+        _ if openai_key.is_empty() => Protocol::Qwen35,
+        _ => Protocol::Openai,
+    };
     let api_key = if openai_key.is_empty() {
         std::env::var("DASHSCOPE_API_KEY").expect("set DASHSCOPE_API_KEY or OPENAI_API_KEY")
     } else {
@@ -32,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let settings = Settings {
-        provider,
+        protocol,
         api_key,
         openai_key,
         url: std::env::var("PROBE_URL").unwrap_or_default(),
@@ -40,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         region: Region::Beijing,
         source_lang: "auto".into(),
         target_lang: target,
-        // Empty falls back to the provider's default model.
+        // Empty falls back to the protocol's default model.
         model: std::env::args().nth(3).unwrap_or_default(),
         hotwords: Default::default(),
         // set PROBE_SPEAK=1 to see the audio-modality frames too.

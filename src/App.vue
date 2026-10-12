@@ -13,7 +13,7 @@ import Settings from "./components/Settings.vue";
 import About from "./components/About.vue";
 import History from "./components/History.vue";
 import { locale, setLocale, t } from "./i18n";
-import { canSpeak, langName, languageCodes, MODEL_QWEN3_8, VOICES } from "./languages";
+import { canSpeak, langName, languageCodes, modelName, VOICES } from "./languages";
 import { check, checkUpdateAtStartup, openHome } from "./update";
 import { activeKey, settings, initSettings, resolvedTheme, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
 import {
@@ -115,7 +115,7 @@ async function chooseFile() {
 /* ---------- read aloud ---------- */
 const voiceOptions = VOICES.map((v) => ({ value: v, label: v }));
 // Qwen3.8 and OpenAI always detect the source language themselves.
-const autoSourceOnly = computed(() => settings.provider === "openai" || settings.model === MODEL_QWEN3_8);
+const autoSourceOnly = computed(() => settings.protocol !== "qwen35");
 watch(autoSourceOnly, (only) => {
   if (only) settings.sourceLang = "auto";
 }, { immediate: true });
@@ -186,7 +186,9 @@ watch(() => settings.sub.show, showOverlay);
 watch(() => settings.sub.locked, setOverlayClickThrough);
 
 /* ---------- model / languages ---------- */
-const langCodes = computed(() => languageCodes(settings.provider, settings.model));
+const langCodes = computed(() => languageCodes(settings.protocol, settings.model));
+/** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
+const modelLabel = computed(() => modelName(settings.protocol, settings.model));
 
 /** The picker matches on both UI languages, so a zh user can still type "japanese". */
 const langOptions = computed(() =>
@@ -302,7 +304,8 @@ watch([lines, current], async () => {
         <img class="mark" src="./assets/mark.png" alt="" draggable="false" />
         <div class="brand-text">
           <strong>{{ t("appTitle") }}</strong>
-          <small>{{ t("appSub") }}</small>
+          <!-- Its own target inside the brand button: what it names is changed in Settings. -->
+          <small class="brand-model" :title="t('settings')" @click.stop="showSettings = true">{{ modelLabel }}</small>
         </div>
       </button>
 
@@ -461,7 +464,7 @@ watch([lines, current], async () => {
             <p v-if="settings.speak && speakBlocked" class="hint">{{ t(speakBlocked) }}</p>
             <template v-else-if="settings.speak">
               <!-- OpenAI picks its own voice; there is nothing to choose. -->
-              <div v-if="settings.provider !== 'openai'" class="line">
+              <div v-if="settings.protocol !== 'openai'" class="line">
                 <span>{{ t("voice") }}</span>
                 <Picker v-model="settings.voice" :options="voiceOptions" :disabled="isRunning()" />
               </div>
@@ -639,6 +642,7 @@ watch([lines, current], async () => {
 .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-text strong { font-size: 13px; font-weight: 700; letter-spacing: -0.01em; }
 .brand-text small { font-size: 10px; color: var(--ink-3); }
+.brand-model:hover { color: var(--accent); }
 
 .pill {
   display: flex; align-items: center; gap: 7px;

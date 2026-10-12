@@ -15,16 +15,16 @@
 
 use keyring::Entry;
 
-use crate::config::Provider;
+use crate::config::Protocol;
 
 const SERVICE: &str = "com.nosugark.realingo";
 
-/// One slot per provider, so switching never sends one vendor's key to the other. Qwen keeps
-/// the original name: keys saved before there was a second provider stay where they are.
-fn user(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Qwen => "api-key",
-        Provider::Openai => "api-key-openai",
+/// One slot per vendor, not per protocol: both Qwen protocols sign in with the same Model
+/// Studio key. Qwen keeps the original name, so keys saved before OpenAI stay where they are.
+fn user(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::Qwen35 | Protocol::Qwen38 => "api-key",
+        Protocol::Openai => "api-key-openai",
     }
 }
 
@@ -33,13 +33,13 @@ pub fn available() -> bool {
     Entry::store_status().is_ok()
 }
 
-pub fn get(provider: Provider) -> Option<String> {
-    get_as(user(provider))
+pub fn get(protocol: Protocol) -> Option<String> {
+    get_as(user(protocol))
 }
 
 /// An empty key deletes the entry — "clear the field" has to actually clear it.
-pub fn set(provider: Provider, key: &str) -> Result<(), String> {
-    set_as(user(provider), key)
+pub fn set(protocol: Protocol, key: &str) -> Result<(), String> {
+    set_as(user(protocol), key)
 }
 
 fn get_as(user: &str) -> Option<String> {

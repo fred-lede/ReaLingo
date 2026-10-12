@@ -1,3 +1,5 @@
+import type { Protocol } from "./store";
+
 // Languages supported by qwen3.5-livetranslate-flash-realtime.
 // `tts: true` = the model can also speak this language (the "read aloud" switch).
 const TABLE = `
@@ -84,6 +86,27 @@ export const MODEL_QWEN3_8 = "qwen3.8-livetranslate-flash-realtime";
 export const MODEL_QWEN3 = "qwen3-livetranslate-flash-realtime";
 export const MODEL_OPENAI = "gpt-realtime-translate";
 
+export interface Preset {
+  id: string;
+  name: string;
+  langs: number;
+}
+
+/** The models offered per protocol; the first is the protocol's default. */
+export const PRESETS: Record<Protocol, Preset[]> = {
+  qwen35: [
+    { id: MODEL_QWEN3_5, name: "Qwen3.5", langs: 60 },
+    { id: MODEL_QWEN3, name: "Qwen3", langs: 18 },
+  ],
+  qwen38: [{ id: MODEL_QWEN3_8, name: "Qwen3.8", langs: 60 }],
+  openai: [{ id: MODEL_OPENAI, name: "GPT-Realtime-Translate", langs: 13 }],
+};
+
+/** Short display name: the preset's own, or the raw id for a custom model. */
+export function modelName(protocol: Protocol, model: string): string {
+  return PRESETS[protocol].find((p) => p.id === model)?.name ?? (model || PRESETS[protocol][0].name);
+}
+
 /** Qwen3 covers only these 18 languages. */
 const QWEN3_CODES = new Set(
   "en zh ru fr de pt es it id ko ja vi th ar yue hi el tr".split(" ")
@@ -92,9 +115,9 @@ const QWEN3_CODES = new Set(
 const OPENAI_CODES = new Set("es pt fr ja ru zh de ko hi id vi it en".split(" "));
 
 /** Codes the given model can actually translate into. */
-export function languageCodes(provider: string, model: string): string[] {
+export function languageCodes(protocol: string, model: string): string[] {
   const all = LANGUAGES.map((l) => l.code);
-  if (provider === "openai") return all.filter((c) => OPENAI_CODES.has(c));
+  if (protocol === "openai") return all.filter((c) => OPENAI_CODES.has(c));
   return model === MODEL_QWEN3 ? all.filter((c) => QWEN3_CODES.has(c)) : all;
 }
 

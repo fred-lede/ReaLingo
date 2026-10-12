@@ -1,7 +1,7 @@
 import { reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { MODEL_QWEN3_5 } from "./languages";
+import { MODEL_QWEN3_5, MODEL_QWEN3_8 } from "./languages";
 
 export type Region = "beijing" | "singapore";
 export type Theme = "system" | "light" | "dark";
@@ -32,17 +32,22 @@ export interface SubtitleStyle {
   locked: boolean; // click-through
 }
 
-/** The wire protocol. Model and URL are free-form on top of it. */
-export type Provider = "qwen" | "openai";
+/**
+ * The message format, which follows the protocol rather than the vendor: Qwen3.8 speaks a
+ * different schema from Qwen3/3.5. Model and URL are free-form on top of it.
+ */
+export type Protocol = "qwen35" | "qwen38" | "openai";
 
-/** Where each provider's key lives in `Settings`; Qwen's predates there being two. */
-const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey" } as const;
+/** Where each protocol's key lives. A key belongs to the account, so both Qwens share one. */
+const KEY_FIELD = { qwen35: "apiKey", qwen38: "apiKey", openai: "openaiKey" } as const;
+/** One protocol per credential-store slot, for the loops that visit every key once. */
+const KEY_SLOTS = ["qwen35", "openai"] as const;
 
 export interface Settings {
-  provider: Provider;
+  protocol: Protocol;
   apiKey: string;
   openaiKey: string;
-  /** Empty: the provider's default endpoint. */
+  /** Empty: the protocol's default endpoint. */
   url: string;
   workspaceId: string;
   region: Region;
@@ -61,7 +66,7 @@ export interface Settings {
 }
 
 export const settings = reactive<Settings>({
-  provider: "qwen",
+  protocol: "qwen35",
   apiKey: "",
   openaiKey: "",
   url: "",
@@ -108,6 +113,8 @@ export async function initSettings(persist = true) {
   const saved = await store.get<Partial<Settings>>(KEY);
   if (saved) {
     Object.assign(settings, saved, { sub: { ...settings.sub, ...(saved.sub ?? {}) } });
+    // Saved before the protocol was a setting: the model was what picked the 3.8 schema.
+    if (!saved.protocol) settings.protocol = saved.model === MODEL_QWEN3_8 ? "qwen38" : "qwen35";
   }
 
   keyringOk.value = (await invoke<{ keyring: boolean }>("platform")).keyring;
@@ -115,9 +122,10 @@ export async function initSettings(persist = true) {
     // Anything still in the file is from a build that predates the credential store (or a
     // hand-edited config). Move it across and blank it out — leaving the plaintext copy
     // behind would make the whole exercise pointless.
-    for (const [provider, field] of Object.entries(KEY_FIELD)) {
-      if (settings[field]) await invoke("set_api_key", { provider, key: settings[field] });
-      else settings[field] = await invoke<string>("get_api_key", { provider });
+    for (const protocol of KEY_SLOTS) {
+      const field = KEY_FIELD[protocol];
+      if (settings[field]) await invoke("set_api_key", { protocol, key: settings[field] });
+      else settings[field] = await invoke<string>("get_api_key", { protocol });
     }
   }
 
@@ -125,21 +133,21 @@ export async function initSettings(persist = true) {
   if (persist) {
     watch(settings, (v) => void store?.set(KEY, persistable(v)), { deep: true });
     if (keyringOk.value) {
-      for (const [provider, field] of Object.entries(KEY_FIELD)) {
-        watch(() => settings[field], (key) => saveApiKey(provider, key));
+      for (const protocol of KEY_SLOTS) {
+        watch(() => settings[KEY_FIELD[protocol]], (key) => saveApiKey(protocol, key));
       }
     }
   }
   watch(() => settings.theme, applyTheme);
 }
 
-/** The key of the provider in use — the one a session will actually send. */
+/** The key of the protocol in use — the one a session will actually send. */
 export function activeKey(): string {
-  return settings[KEY_FIELD[settings.provider]];
+  return settings[KEY_FIELD[settings.protocol]];
 }
 
 export function setActiveKey(key: string) {
-  settings[KEY_FIELD[settings.provider]] = key;
+  settings[KEY_FIELD[settings.protocol]] = key;
 }
 
 /** What goes to settings.json — never an API key once the credential store holds it. */
@@ -151,9 +159,9 @@ function persistable(v: Settings) {
 
 // Debounced: one credential-store write per pause, not one per keystroke.
 const keyTimers: Record<string, number | undefined> = {};
-function saveApiKey(provider: string, key: string) {
-  clearTimeout(keyTimers[provider]);
-  keyTimers[provider] = window.setTimeout(() => void invoke("set_api_key", { provider, key }), 400);
+function saveApiKey(protocol: string, key: string) {
+  clearTimeout(keyTimers[protocol]);
+  keyTimers[protocol] = window.setTimeout(() => void invoke("set_api_key", { protocol, key }), 400);
 }
 
 const dark = window.matchMedia("(prefers-color-scheme: dark)");

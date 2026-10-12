@@ -14,7 +14,7 @@ mod tray;
 mod wasapi;
 
 use audio::DeviceInfo;
-use config::{Provider, Settings};
+use config::{Protocol, Settings};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -60,13 +60,13 @@ fn platform() -> Platform {
 }
 
 #[tauri::command]
-fn get_api_key(provider: Provider) -> String {
-    secret::get(provider).unwrap_or_default()
+fn get_api_key(protocol: Protocol) -> String {
+    secret::get(protocol).unwrap_or_default()
 }
 
 #[tauri::command]
-fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
-    secret::set(provider, &key)
+fn set_api_key(protocol: Protocol, key: String) -> Result<(), String> {
+    secret::set(protocol, &key)
 }
 
 #[tauri::command]
@@ -96,7 +96,7 @@ fn start_stream(
 
     // The credential store wins over whatever the webview sent, so on a machine that has
     // one the key never has to travel through the frontend at all.
-    if let Some(key) = secret::get(settings.provider) {
+    if let Some(key) = secret::get(settings.protocol) {
         *settings.key_mut() = key;
     }
 

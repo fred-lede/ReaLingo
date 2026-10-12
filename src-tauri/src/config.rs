@@ -21,13 +21,16 @@ pub enum Region {
     Singapore,
 }
 
-/// Which wire protocol to speak. Model and URL are free-form on top of it, so any service
-/// that talks one of these protocols can be pointed at.
+/// Which message format to speak — set by the protocol, not the vendor: Qwen3.8 talks a
+/// different schema from Qwen3/3.5 on the same endpoint. Model and URL are free-form on top
+/// of it, so any service that talks one of these protocols can be pointed at.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Provider {
+pub enum Protocol {
+    /// Qwen3.5, and Qwen3 with it.
     #[default]
-    Qwen,
+    Qwen35,
+    Qwen38,
     Openai,
 }
 
@@ -35,13 +38,13 @@ pub enum Provider {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)]
-    pub provider: Provider,
-    /// The Qwen key; named before there was a second provider.
+    pub protocol: Protocol,
+    /// The Model Studio key, shared by both Qwen protocols; named before OpenAI was added.
     #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub openai_key: String,
-    /// Optional. Empty => the provider's own endpoint; set => dialled as-is, plus `model=`
+    /// Optional. Empty => the protocol's own endpoint; set => dialled as-is, plus `model=`
     /// unless the URL already carries one.
     #[serde(default)]
     pub url: String,
@@ -85,40 +88,41 @@ fn en() -> String {
 
 impl Settings {
     pub fn key(&self) -> &str {
-        match self.provider {
-            Provider::Qwen => &self.api_key,
-            Provider::Openai => &self.openai_key,
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => &self.api_key,
+            Protocol::Openai => &self.openai_key,
         }
     }
 
     pub fn key_mut(&mut self) -> &mut String {
-        match self.provider {
-            Provider::Qwen => &mut self.api_key,
-            Provider::Openai => &mut self.openai_key,
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => &mut self.api_key,
+            Protocol::Openai => &mut self.openai_key,
         }
     }
 
     pub fn model(&self) -> &str {
-        match (self.model.trim(), self.provider) {
-            ("", Provider::Qwen) => MODEL_QWEN3_5,
-            ("", Provider::Openai) => MODEL_OPENAI,
+        match (self.model.trim(), self.protocol) {
+            ("", Protocol::Qwen35) => MODEL_QWEN3_5,
+            ("", Protocol::Qwen38) => MODEL_QWEN3_8,
+            ("", Protocol::Openai) => MODEL_OPENAI,
             (m, _) => m,
         }
     }
 
     /// What the uplink must send: Qwen takes 16 kHz, OpenAI rejects anything but 24 kHz.
     pub fn sample_rate(&self) -> u32 {
-        match self.provider {
-            Provider::Qwen => 16_000,
-            Provider::Openai => 24_000,
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => 16_000,
+            Protocol::Openai => 24_000,
         }
     }
 
     /// Event types for (append audio, finish, server says finished).
     pub fn wire(&self) -> (&'static str, &'static str, &'static str) {
-        match self.provider {
-            Provider::Qwen => ("input_audio_buffer.append", "session.finish", "session.finished"),
-            Provider::Openai => ("session.input_audio_buffer.append", "session.close", "session.closed"),
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => ("input_audio_buffer.append", "session.finish", "session.finished"),
+            Protocol::Openai => ("session.input_audio_buffer.append", "session.close", "session.closed"),
         }
     }
 
@@ -132,7 +136,7 @@ impl Settings {
             let sep = if custom.contains('?') { '&' } else { '?' };
             return format!("{custom}{sep}model={model}");
         }
-        if self.provider == Provider::Openai {
+        if self.protocol == Protocol::Openai {
             return format!("wss://api.openai.com/v1/realtime/translations?model={model}");
         }
         let ws = self.workspace_id.trim();
@@ -150,7 +154,7 @@ impl Settings {
     pub fn session_update(&self) -> serde_json::Value {
         // Source language, hotwords, voice and VAD have no OpenAI counterpart; the source is
         // always detected. Audio is always produced — `speak` only decides whether we play it.
-        if self.provider == Provider::Openai {
+        if self.protocol == Protocol::Openai {
             return serde_json::json!({
                 "type": "session.update",
                 "session": {
@@ -174,7 +178,7 @@ impl Settings {
         }
         // Qwen3.8 supplies source transcription automatically. Its session schema uses
         // output_modalities and nested audio settings, not the earlier ASR/VAD fields.
-        if self.model() == MODEL_QWEN3_8 {
+        if self.protocol == Protocol::Qwen38 {
             return serde_json::json!({
                 "type": "session.update",
                 "session": {
@@ -228,7 +232,7 @@ mod tests {
 
     fn s(region: Region, workspace_id: &str) -> Settings {
         Settings {
-            provider: Provider::Qwen,
+            protocol: Protocol::Qwen35,
             api_key: "k".into(),
             openai_key: "o".into(),
             url: String::new(),
@@ -327,7 +331,8 @@ mod tests {
     #[test]
     fn qwen3_8_uses_its_own_session_schema_and_endpoint_model() {
         let mut settings = s(Region::Beijing, "llm-abc");
-        settings.model = MODEL_QWEN3_8.into();
+        settings.protocol = Protocol::Qwen38;
+        settings.model.clear();
         settings.voice = "Chelsie".into();
         settings.hotwords.insert("人工智能".into(), "AI".into());
         assert!(settings.ws_url().ends_with(&format!("?model={MODEL_QWEN3_8}")));
@@ -351,9 +356,23 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_follows_the_protocol_not_the_model_name() {
+        // A renamed 3.8 deployment still needs the 3.8 schema...
+        let mut renamed = s(Region::Beijing, "");
+        renamed.protocol = Protocol::Qwen38;
+        renamed.model = "my-qwen38-deploy".into();
+        assert!(renamed.session_update()["session"].get("output_modalities").is_some());
+        // ...and the 3.8 model name alone no longer switches a 3.5 session over.
+        let mut named = s(Region::Beijing, "");
+        named.model = MODEL_QWEN3_8.into();
+        assert!(named.session_update()["session"].get("input_audio_transcription").is_some());
+        assert_eq!(renamed.key(), named.key());
+    }
+
+    #[test]
     fn openai_speaks_its_own_protocol() {
         let mut o = s(Region::Singapore, "llm-abc");
-        o.provider = Provider::Openai;
+        o.protocol = Protocol::Openai;
         o.model.clear();
         o.target_lang = "zh".into();
         assert_eq!(o.ws_url(), "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate");

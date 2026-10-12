@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch, toRaw } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { activeKey, keyringOk, setActiveKey, settings, type Provider, type Region, type Theme } from "../store";
+import { activeKey, keyringOk, setActiveKey, settings, type Protocol, type Region } from "../store";
 import { isRunning } from "../stream";
-import { MODEL_OPENAI, MODEL_QWEN3, MODEL_QWEN3_5, MODEL_QWEN3_8 } from "../languages";
-import { locale, setLocale, t, type Locale } from "../i18n";
+import { PRESETS } from "../languages";
+import { t } from "../i18n";
 import Picker from "./Picker.vue";
 import Sheet from "./Sheet.vue";
 
@@ -15,7 +15,7 @@ const endpoint = ref("");
 // so only what is read synchronously is tracked — and a field missing from that list makes
 // the preview silently lag one change behind.
 watch(
-  () => [settings.provider, settings.url, settings.region, settings.workspaceId, settings.model],
+  () => [settings.protocol, settings.url, settings.region, settings.workspaceId, settings.model],
   async () => {
     endpoint.value = await invoke<string>("endpoint_url", { settings: toRaw(settings) });
   },
@@ -45,16 +45,10 @@ watch(hotwordText, (text) => {
 });
 const hotwordCount = computed(() => Object.keys(settings.hotwords).length);
 
-const isOpenai = computed(() => settings.provider === "openai");
+const isOpenai = computed(() => settings.protocol === "openai");
 
 const presets = computed(() =>
-  isOpenai.value
-    ? [{ value: MODEL_OPENAI, label: t("modelOpenai"), note: "13" }]
-    : [
-        { value: MODEL_QWEN3_8, label: t("modelQwen3_8"), note: "60" },
-        { value: MODEL_QWEN3_5, label: t("modelQwen3_5"), note: "60" },
-        { value: MODEL_QWEN3, label: t("modelQwen3"), note: "18" },
-      ]
+  PRESETS[settings.protocol].map((p) => ({ value: p.id, label: p.name, note: `${p.langs} ${t("langsUnit")}` }))
 );
 const CUSTOM = "\0custom";
 const modelOptions = computed(() => [...presets.value, { value: CUSTOM, label: t("modelCustom") }]);
@@ -71,19 +65,28 @@ const modelPick = computed({
 
 const apiKey = computed({ get: activeKey, set: setActiveKey });
 
-/** A model or URL meant for one protocol is wrong for the other, so both start over. */
-function pickProvider(p: Provider) {
-  if (p === settings.provider) return;
-  settings.provider = p;
-  settings.model = p === "openai" ? MODEL_OPENAI : MODEL_QWEN3_5;
-  settings.url = "";
+/**
+ * A model meant for one protocol is wrong for another, so it starts over. The URL survives a
+ * move between the two Qwens — same endpoint, same account — but not to another vendor.
+ */
+function pickProtocol(p: Protocol) {
+  if (p === settings.protocol) return;
+  if ((p === "openai") !== isOpenai.value) settings.url = "";
+  settings.protocol = p;
+  settings.model = PRESETS[p][0].id;
   customModel.value = false;
 }
 
-const providers: [Provider, "providerQwen" | "providerOpenai"][] = [
-  ["qwen", "providerQwen"],
-  ["openai", "providerOpenai"],
-];
+// A dropdown, not a segmented row: the list grows with every protocol added.
+const protocolOptions = computed(() => [
+  { value: "qwen35", label: t("protocolQwen35"), note: t("vendorQwen") },
+  { value: "qwen38", label: t("protocolQwen38"), note: t("vendorQwen") },
+  { value: "openai", label: t("protocolOpenai") },
+]);
+const protocolPick = computed({
+  get: () => settings.protocol as string,
+  set: (v: string) => pickProtocol(v as Protocol),
+});
 
 /** The console page differs per region, and the intl one is English-only. */
 const keyConsole = computed(() =>
@@ -96,93 +99,86 @@ const keyConsole = computed(() =>
 // The opener plugin, not an <a href>: a plain link navigates the app's own webview away.
 const openConsole = () => invoke("plugin:opener|open_url", { url: keyConsole.value });
 
-const regions: [Region, "regionBJ" | "regionSG"][] = [
-  ["beijing", "regionBJ"],
-  ["singapore", "regionSG"],
-];
-const themes: [Theme, "themeSystem" | "themeLight" | "themeDark"][] = [
-  ["system", "themeSystem"],
-  ["light", "themeLight"],
-  ["dark", "themeDark"],
-];
+// A dropdown as well: more nodes are planned.
+const regionOptions = computed(() => [
+  { value: "beijing", label: t("regionBJ") },
+  { value: "singapore", label: t("regionSG") },
+]);
+const regionPick = computed({
+  get: () => settings.region as string,
+  set: (v: string) => (settings.region = v as Region),
+});
+
+/** Starts open when something in it is already set, so a configured override is never hidden. */
+const advancedOpen = !!settings.url || (!isOpenai.value && !!settings.workspaceId);
 </script>
 
 <template>
   <Sheet :title="t('settings')" @close="$emit('close')">
-        <div class="field">
-          <span class="label">{{ t("provider") }}</span>
-          <div class="seg">
-            <button
-              v-for="[value, key] in providers"
-              :key="value"
-              :class="{ on: settings.provider === value }"
-              :disabled="isRunning()"
-              @click="pickProvider(value)"
-            >
-              {{ t(key) }}
-            </button>
-          </div>
-          <small>{{ t("providerHint") }}</small>
-        </div>
+    <section class="group">
+      <h3>{{ t("groupConn") }}</h3>
 
-        <label class="field">
-          <span class="label">{{ t("apiKey") }}</span>
-          <input v-model="apiKey" type="password" placeholder="sk-..." spellcheck="false" />
-          <small>
-            {{ keyringOk ? t("apiKeyHint") : t("apiKeyPlain") }}
-            <button class="link" @click.prevent="openConsole">
-              {{ isOpenai ? t("apiKeyGetOpenai") : t("apiKeyGet") }} ↗
-            </button>
-          </small>
-        </label>
+      <div class="field">
+        <span class="label">{{ t("protocol") }}</span>
+        <Picker v-model="protocolPick" :options="protocolOptions" :disabled="isRunning()" />
+        <small v-if="!isOpenai">{{ t("protocolHint") }}</small>
+      </div>
 
-        <div class="field">
-          <span class="label">{{ t("model") }}</span>
-          <Picker v-model="modelPick" :options="modelOptions" :disabled="isRunning()" />
-          <input
-            v-if="customModel"
-            v-model.trim="settings.model"
-            type="text"
-            :placeholder="t('modelCustomPh')"
-            :disabled="isRunning()"
-            spellcheck="false"
-          />
-          <small v-if="!isOpenai">{{ t("modelHint") }}</small>
-        </div>
+      <label class="field">
+        <span class="label">{{ t("apiKey") }}</span>
+        <input v-model="apiKey" type="password" placeholder="sk-..." spellcheck="false" />
+        <small>
+          {{ keyringOk ? t("apiKeyHint") : t("apiKeyPlain") }}
+          <button class="link" @click.prevent="openConsole">
+            {{ isOpenai ? t("apiKeyGetOpenai") : t("apiKeyGet") }} ↗
+          </button>
+        </small>
+      </label>
 
+      <div class="field">
+        <span class="label">{{ t("model") }}</span>
+        <Picker v-model="modelPick" :options="modelOptions" :disabled="isRunning()" />
+        <input
+          v-if="customModel"
+          v-model.trim="settings.model"
+          type="text"
+          :placeholder="t('modelCustomPh')"
+          :disabled="isRunning()"
+          spellcheck="false"
+        />
+      </div>
+
+      <div v-if="!isOpenai" class="field">
+        <span class="label">{{ t("region") }}</span>
+        <Picker v-model="regionPick" :options="regionOptions" :disabled="isRunning()" />
+      </div>
+    </section>
+
+    <!-- Hotwords are the group's only item, so its name rides on the title line. -->
+    <section v-if="!isOpenai" class="group">
+      <h3>{{ t("groupTranslate") }} <span class="sub">{{ t("hotwords") }}</span></h3>
+      <textarea
+        v-model="hotwordText"
+        :aria-label="t('hotwords')"
+        :disabled="isRunning()"
+        rows="4"
+        spellcheck="false"
+        placeholder="人工智能=Artificial Intelligence"
+      ></textarea>
+      <small class="hint">
+        {{ t("hotwordsHint") }}
+        <template v-if="hotwordCount"> · {{ hotwordCount }} {{ t("hotwordsInUse") }}</template>
+      </small>
+    </section>
+
+    <!-- Native <details>: the open/closed state and keyboard handling come for free. -->
+    <details class="group" :open="advancedOpen">
+      <summary>{{ t("groupAdvanced") }}</summary>
+      <div class="group-body">
         <label class="field">
           <span class="label">{{ t("url") }}</span>
           <input v-model.trim="settings.url" type="text" placeholder="wss://..." :disabled="isRunning()" spellcheck="false" />
           <small>{{ t("urlHint") }}</small>
-        </label>
-
-        <label v-if="!isOpenai" class="field">
-          <span class="label">{{ t("hotwords") }}</span>
-          <textarea
-            v-model="hotwordText"
-            :disabled="isRunning()"
-            rows="4"
-            spellcheck="false"
-            placeholder="人工智能=Artificial Intelligence"
-          ></textarea>
-          <small>
-            {{ t("hotwordsHint") }}
-            <template v-if="hotwordCount"> · {{ hotwordCount }} {{ t("hotwordsInUse") }}</template>
-          </small>
-        </label>
-
-        <label v-if="!isOpenai" class="field">
-          <span class="label">{{ t("region") }}</span>
-          <div class="seg">
-            <button
-              v-for="[value, key] in regions"
-              :key="value"
-              :class="{ on: settings.region === value }"
-              @click="settings.region = value"
-            >
-              {{ t(key) }}
-            </button>
-          </div>
         </label>
 
         <label v-if="!isOpenai" class="field">
@@ -195,48 +191,40 @@ const themes: [Theme, "themeSystem" | "themeLight" | "themeDark"][] = [
           <span class="label">{{ t("endpoint") }}</span>
           <code class="endpoint">{{ endpoint }}</code>
         </div>
-
-        <hr />
-
-        <label class="field">
-          <span class="label">{{ t("theme") }}</span>
-          <div class="seg">
-            <button
-              v-for="[value, key] in themes"
-              :key="value"
-              :class="{ on: settings.theme === value }"
-              @click="settings.theme = value"
-            >
-              {{ t(key) }}
-            </button>
-          </div>
-        </label>
-
-        <label class="field">
-          <span class="label">{{ t("uiLang") }}</span>
-          <div class="seg">
-            <button
-              v-for="l in (['zh', 'en'] as Locale[])"
-              :key="l"
-              :class="{ on: locale === l }"
-              @click="setLocale(l)"
-            >
-              {{ l === "zh" ? "中文" : "English" }}
-            </button>
-          </div>
-        </label>
+      </div>
+    </details>
   </Sheet>
 </template>
 
 <style scoped>
-.field { display: flex; flex-direction: column; gap: 7px; }
+.group { display: flex; flex-direction: column; gap: 14px; }
+.group + .group { padding-top: 16px; border-top: 1px solid var(--hairline); }
+/* A step above the field labels, or the group titles read as just another field. */
+.group > h3, .group > summary { margin: 0; font-size: 13px; font-weight: 700; color: var(--ink); }
+summary { cursor: pointer; list-style-position: inside; }
+/* <details> does not hand flex layout to its content, so the body spaces itself. */
+.group-body { display: flex; flex-direction: column; gap: 14px; }
+
+.group > h3 .sub { margin-left: 6px; font-weight: 500; color: var(--ink-3); }
+
+/* Label left, control right, everything else (custom-model input, hint) under the control —
+   one row per setting instead of a label line plus a full-width control line. */
+.field {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
+}
+.field > :not(.label) { grid-column: 2; }
 textarea {
   font-family: "SF Mono", "Cascadia Code", ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.6;
 }
 
-.field small { font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+.field small, .hint { font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+.group > .hint { margin-top: -6px; }
 
 .endpoint {
   font-family: "SF Mono", "Cascadia Code", ui-monospace, monospace;
@@ -258,6 +246,4 @@ textarea {
   text-underline-offset: 2px;
 }
 .link:hover { filter: brightness(1.15); }
-
-hr { border: none; border-top: 1px solid var(--hairline); margin: 0; }
 </style>
