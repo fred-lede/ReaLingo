@@ -473,7 +473,8 @@ watch([lines, current], async () => {
             <p v-if="settings.speak && speakBlocked" class="hint">{{ t(speakBlocked) }}</p>
             <template v-else-if="settings.speak">
               <!-- OpenAI picks its own voice; there is nothing to choose. -->
-              <div v-if="settings.protocol !== 'openai'" class="line">
+              <p v-if="settings.protocol === 'openai'" class="hint">{{ t("voiceOpenai") }}</p>
+              <div v-else class="line">
                 <span>{{ t("voice") }}</span>
                 <Picker v-model="settings.voice" class="grow" :options="voiceOptions" :disabled="isRunning()" />
               </div>

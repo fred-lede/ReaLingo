@@ -24,6 +24,7 @@ const zh = {
   speakNoLang: "这个目标语言只有文字输出，不能朗读",
   speakLinuxSystem: "Linux 上录系统声音时会把朗读也录回去，所以这里不朗读",
   speakMic: "用扬声器朗读会被麦克风收回去，请戴耳机",
+  voiceOpenai: "OpenAI 的音色由服务端决定",
   auto: "自动检测",
   search: "搜索…",
 
@@ -167,6 +168,7 @@ const en: typeof zh = {
   speakMic: "The microphone will pick up speech from your speakers; use headphones",
   auto: "Auto detect",
   search: "Search…",
+  voiceOpenai: "OpenAI picks the voice itself",
 
   start: "Start",
   stop: "Stop",
