@@ -340,3 +340,13 @@ GIF 只有 256 色，渐变字会断层，且 1-bit 透明会在深色底上留�
 ## 许可
 
 [MIT](LICENSE)
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=nosugark%2Frealingo&type=date&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=nosugark/realingo&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=nosugark/realingo&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=nosugark/realingo&type=date&legend=bottom-right" />
+ </picture>
+</a>
