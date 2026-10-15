@@ -10,6 +10,12 @@
 <meta property="og:description" content="支持 Qwen、OpenAI、Gemini 的实时同传，字幕浮在任何窗口上，译文还能念给你听。开源免费。" />
 <meta property="og:image" content="https://nosugark.github.io/ReaLingo/promo-poster.jpg" />
 <meta property="og:type" content="website" />
+<meta property="og:video" content="https://nosugark.github.io/ReaLingo/promo.mp4" />
+<meta property="og:video:type" content="video/mp4" />
+<meta property="og:video:width" content="1920" />
+<meta property="og:video:height" content="1080" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://nosugark.github.io/ReaLingo/promo-poster.jpg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap" rel="stylesheet" />
@@ -216,6 +222,12 @@ td small { color: var(--ink-2); }
 .player .playbtn:hover span { transform: scale(1.08); }
 .player .playbtn svg { width: 32px; height: 32px; fill: #1d1d1f; margin-left: 5px; }
 .player.playing .playbtn { display: none; }
+.player .len { position: absolute; right: 16px; top: 16px; font: 600 13px/1 var(--display); font-style: normal; color: #fff; padding: 6px 10px; border-radius: 999px; background: rgba(0, 0, 0, .55); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.film { padding-top: clamp(60px, 8vw, 100px); scroll-margin-top: 0; }
+.film .head { margin: 0 auto; text-align: center; }
+.film .lead { margin-left: auto; margin-right: auto; }
+/* heading + player fit one laptop screen */
+.film .player { margin: 34px auto 0; max-width: min(1000px, (100vh - 300px) * 16 / 9); }
 .rel-meta { color: var(--ink-2); margin-top: 12px; min-height: 1.6em; }
 .dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 36px; }
 .dl a { position: relative; text-decoration: none; padding: 28px; border-radius: 24px; background: var(--surface); box-shadow: var(--card); display: flex; flex-direction: column; gap: 6px; transition: transform .4s var(--ease), box-shadow .4s var(--ease); }
@@ -240,7 +252,7 @@ footer a { text-decoration: none; }
   table { font-size: 13px; } th, td { padding: 12px; }
   .src-tabs div { padding: 16px 6px; font-size: 14px; }
 }
-@media (max-width: 520px) { header nav .hide-xs { display: none; } .apis button { padding: 8px 10px; font-size: 13px; } }
+@media (max-width: 520px) { header nav .hide-xs { display: none; } .player .len { display: none; } .apis button { padding: 8px 10px; font-size: 13px; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: .001ms !important; }
   .reveal { opacity: 1; transform: none; }
@@ -253,6 +265,7 @@ footer a { text-decoration: none; }
   <img src="mark.png" alt="" />
   <span class="name">ReaLingo</span>
   <nav>
+    <a class="hide-sm" href="#film"><span class="zh">宣传片</span><span class="en">Film</span></a>
     <a class="hide-sm" href="#start"><span class="zh">开始使用</span><span class="en">Get started</span></a>
     <a class="hide-sm" href="#languages"><span class="zh">语言</span><span class="en">Languages</span></a>
     <a class="hide-sm" href="#faq"><span class="zh">常见问题</span><span class="en">FAQ</span></a>
@@ -274,7 +287,7 @@ footer a { text-decoration: none; }
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4.2-4.2M12 14l-4.2-4.2M4.5 17.5v1A2.5 2.5 0 0 0 7 21h10a2.5 2.5 0 0 0 2.5-2.5v-1"/></svg>
         <span id="hero-dl-text"><span class="zh">下载最新版</span><span class="en">Download</span></span>
       </a>
-      <a class="btn ghost" href="#start"><span class="zh">三步开始 ›</span><span class="en">Three steps ›</span></a>
+      <a class="btn ghost" href="#film"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></svg><span class="zh">看 30 秒宣传片</span><span class="en">Watch the 30s film</span></a>
     </div>
     <p class="cta-note" id="hero-note"></p>
     <a class="pill reveal" style="--d:.22s" href="#languages"><i></i><span class="zh">0.6 新增：接入 OpenAI 与 Google Gemini ›</span><span class="en">New in 0.6: OpenAI and Google Gemini ›</span></a>
@@ -290,6 +303,24 @@ footer a { text-decoration: none; }
     </div>
   </div>
 </div>
+
+<!-- ======================= film: right under the fold, it is the 30-second pitch ======================= -->
+<section id="film" class="film">
+  <div class="wrap">
+    <div class="head reveal">
+      <div class="kicker"><span class="zh">宣传片</span><span class="en">Film</span></div>
+      <h2 class="h2"><span class="zh">30 秒看懂 ReaLingo</span><span class="en">ReaLingo in 30 seconds</span></h2>
+      <p class="lead"><span class="zh">实时翻译、译文朗读、置顶字幕窗、四种接口，打开声音看一遍。</span><span class="en">Live translation, read-aloud, the floating overlay and four APIs. Chinese voiceover, with English subtitles.</span></p>
+    </div>
+    <div class="player reveal" id="player">
+      <video id="video" poster="promo-poster.jpg" preload="none" playsinline width="1920" height="1080">
+        <source src="promo.mp4" type="video/mp4" />
+        <track kind="subtitles" srclang="en" label="English" src="promo.en.vtt" />
+      </video>
+      <button class="playbtn" type="button" id="play" aria-label="Play"><span><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg></span><em class="len">0:30</em></button>
+    </div>
+  </div>
+</section>
 
 <!-- ======================= three steps ======================= -->
 <section id="start">
@@ -467,20 +498,6 @@ footer a { text-decoration: none; }
       <details><summary><span class="zh">朗读会不会被录回去，越翻越乱？</span><span class="en">Will it record its own voice and loop?</span></summary><p><span class="zh">录系统声音时不会：Windows 和 macOS 都会把 ReaLingo 自己的进程排除在采集之外，Linux 上则不朗读。用麦克风时，扬声器的声音会被物理地收进去，请戴耳机。</span><span class="en">Not with system audio: Windows and macOS leave ReaLingo’s own process out of the capture, and Linux does not speak at all. With a microphone the speakers are physically picked up — use headphones.</span></p></details>
       <details><summary><span class="zh">翻译记录会存在哪？</span><span class="en">Where are transcripts kept?</span></summary><p><span class="zh">默认不保存。打开翻译流右上角的「记录」后，每场存成 <code>app-data/history/</code> 下的一个 JSONL 文件，可以在「翻译历史」里打开文件夹、导出或删除。</span><span class="en">Nothing is saved by default. Turn on “Record” and each session becomes one JSONL file in <code>app-data/history/</code>, which the History panel can open, export or delete.</span></p></details>
       <details><summary><span class="zh">Linux 怎么装？</span><span class="en">How do I install on Linux?</span></summary><p><span class="zh">用 apt 装本地包，依赖会一起装上：<code>sudo apt install ./ReaLingo_*_amd64.deb</code>。用 <code>dpkg -i</code> 不会解析依赖。</span><span class="en">Install with apt so the dependencies come along: <code>sudo apt install ./ReaLingo_*_amd64.deb</code>. <code>dpkg -i</code> resolves none of them.</span></p></details>
-    </div>
-  </div>
-</section>
-
-<!-- ======================= film ======================= -->
-<section id="film">
-  <div class="wrap">
-    <div class="head reveal">
-      <div class="kicker"><span class="zh">宣传片</span><span class="en">Film</span></div>
-      <h2 class="h2"><span class="zh">一分钟看它怎么工作</span><span class="en">A minute of it at work</span></h2>
-    </div>
-    <div class="player reveal" id="player">
-      <video id="video" poster="promo-poster.jpg" preload="none" playsinline><source src="promo.mp4" type="video/mp4" /></video>
-      <button class="playbtn" type="button" id="play" aria-label="Play"><span><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg></span></button>
     </div>
   </div>
 </section>
@@ -757,9 +774,15 @@ footer a { text-decoration: none; }
   renderDownloads();
 
   /* ---- video: nothing is fetched until the poster is clicked ---- */
+  // The film is voiced and captioned in Chinese; English readers get the subtitle track.
+  function syncSubs() {
+    var t = $("#video").textTracks[0];
+    if (t) t.mode = zh() ? "hidden" : "showing";
+  }
+  $("#lang").addEventListener("click", syncSubs);
   $("#play").addEventListener("click", function () {
     $("#player").classList.add("playing");
-    var v = $("#video"); v.controls = true; v.play();
+    var v = $("#video"); v.controls = true; syncSubs(); v.play();
   });
 })();
 </script>
