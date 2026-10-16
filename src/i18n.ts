@@ -64,6 +64,9 @@ const zh = {
 
   streamTitle: "翻译流",
   streamEmpty: "点击「开始翻译」，译文会实时出现在这里",
+  streamFont: "字号",
+  streamSrc: "原文",
+  streamTgt: "译文",
   clear: "清空",
   exportTxt: "导出 TXT",
   exportSrt: "导出 SRT",
@@ -213,6 +216,9 @@ const en: typeof zh = {
 
   streamTitle: "Translation stream",
   streamEmpty: "Hit Start — translations will stream in here",
+  streamFont: "Font size",
+  streamSrc: "Source",
+  streamTgt: "Translation",
   clear: "Clear",
   exportTxt: "Export TXT",
   exportSrt: "Export SRT",
