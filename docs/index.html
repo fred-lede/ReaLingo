@@ -151,7 +151,7 @@ input[type=range] { width: 150px; accent-color: var(--hero); }
 .screen .bars i { flex: 1; border-radius: 8px; opacity: .45; }
 .screen .ov { position: absolute; left: 6%; right: 6%; bottom: 8%; padding: 14px 24px; border-radius: 18px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); transition: all .3s var(--ease); }
 .screen .ov p { margin: 0; line-height: 1.4; }
-.screen .ov .s { font-size: .62em; font-weight: 500; color: #a8c0dd; margin-bottom: .2em; }
+.screen .ov .s { font-weight: 500; color: #a8c0dd; margin-bottom: .2em; }
 .screen .ov .t { font-weight: 700; }
 .screen .ov.outline p { text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 10px rgba(0, 0, 0, .85); }
 
@@ -352,7 +352,8 @@ footer a { text-decoration: none; }
         <div class="k"><span class="zh">对齐</span><span class="en">Align</span></div>
         <div class="seg" data-key="align"><button data-v="left"><span class="zh">左</span><span class="en">Left</span></button><button data-v="center" class="on"><span class="zh">中</span><span class="en">Centre</span></button><button data-v="right"><span class="zh">右</span><span class="en">Right</span></button></div>
         <label><span><span class="zh">背景不透明度</span><span class="en">Background</span></span><input type="range" id="op" min="0" max="100" value="55" /></label>
-        <label><span><span class="zh">字号</span><span class="en">Size</span></span><input type="range" id="fs" min="16" max="40" value="26" /></label>
+        <label><span><span class="zh">原文字号</span><span class="en">Source size</span></span><input type="range" id="fsS" min="12" max="40" value="16" /></label>
+        <label><span><span class="zh">译文字号</span><span class="en">Translation size</span></span><input type="range" id="fsT" min="12" max="40" value="26" /></label>
         <div class="row"><span><span class="zh">文字描边</span><span class="en">Outline</span></span><button class="sw on" id="outline" aria-label="outline"></button></div>
         <div class="row"><span><span class="zh">译文颜色</span><span class="en">Text colour</span></span><div class="swatches" id="colors"><button class="on" style="background:#ffffff" data-c="#ffffff"></button><button style="background:#ffe08a" data-c="#ffe08a"></button><button style="background:#8af0d0" data-c="#8af0d0"></button><button style="background:#9cc8ff" data-c="#9cc8ff"></button></div></div>
       </div>
@@ -646,15 +647,17 @@ footer a { text-decoration: none; }
   if (!reduced) timer = setInterval(function () { pick((cur + 1) % TARGETS.length); }, 2600);
 
   /* ---- overlay playground: mirrors settings.sub ---- */
-  var ov = $("#ov"), state = { mode: "both", align: "center", op: 55, fs: 26, outline: true, color: "#ffffff" };
+  var ov = $("#ov"), state = { mode: "both", align: "center", op: 55, srcSize: 16, tgtSize: 26, outline: true, color: "#ffffff" };
   function paint() {
     ov.style.background = "rgba(6,8,14," + state.op / 100 + ")";
-    ov.style.fontSize = state.fs + "px";
     ov.style.textAlign = state.align;
     ov.classList.toggle("outline", state.outline);
-    ov.querySelector(".s").style.display = state.mode === "target" ? "none" : "";
-    ov.querySelector(".t").style.display = state.mode === "source" ? "none" : "";
-    ov.querySelector(".t").style.color = state.color;
+    var src = ov.querySelector(".s"), tgt = ov.querySelector(".t");
+    src.style.fontSize = state.srcSize + "px";
+    src.style.display = state.mode === "target" ? "none" : "";
+    tgt.style.fontSize = state.tgtSize + "px";
+    tgt.style.display = state.mode === "source" ? "none" : "";
+    tgt.style.color = state.color;
   }
   document.querySelectorAll("#panel .seg").forEach(function (seg) {
     seg.addEventListener("click", function (e) {
@@ -664,7 +667,8 @@ footer a { text-decoration: none; }
     });
   });
   $("#op").addEventListener("input", function (e) { state.op = +e.target.value; paint(); });
-  $("#fs").addEventListener("input", function (e) { state.fs = +e.target.value; paint(); });
+  $("#fsS").addEventListener("input", function (e) { state.srcSize = +e.target.value; paint(); });
+  $("#fsT").addEventListener("input", function (e) { state.tgtSize = +e.target.value; paint(); });
   $("#outline").addEventListener("click", function (e) { state.outline = !state.outline; e.currentTarget.classList.toggle("on", state.outline); paint(); });
   $("#colors").addEventListener("click", function (e) {
     var b = e.target.closest("button"); if (!b) return;
