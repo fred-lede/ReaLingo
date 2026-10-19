@@ -13,7 +13,7 @@ const box = ref<HTMLElement | null>(null);
 const pop = ref<HTMLElement | null>(null);
 const popStyle = ref<Record<string, string>>({});
 
-/** Fixed so the popup can be placed before it has been laid out. */
+/** Only a guess, for the first placement — before the panel has been laid out. */
 const POP_W = 226;
 const POP_H = 110;
 
@@ -27,10 +27,12 @@ function place() {
   if (!r) return;
   const below = window.innerHeight - r.bottom;
   const flipUp = below < POP_H && r.top > below;
+  // The panel is content-sized — "Translation" is far wider than "译文" — so its real
+  // width is only known on the second pass, once the DOM has it.
+  const w = pop.value?.offsetWidth || POP_W;
   popStyle.value = {
     // Right-aligned to the trigger, then kept inside the viewport.
-    left: `${Math.max(8, Math.min(r.right - POP_W, window.innerWidth - POP_W - 8))}px`,
-    width: `${POP_W}px`,
+    left: `${Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8))}px`,
     ...(flipUp
       ? { bottom: `${window.innerHeight - r.top + 6}px` }
       : { top: `${r.bottom + 6}px` }),
@@ -53,6 +55,8 @@ function bind(on: boolean) {
   doc.call(document, "pointerdown", onPointerDown as EventListener, true);
   fn.call(window, "keydown", onKey as EventListener);
   fn.call(window, "resize", place);
+  // No scroll listener, unlike Picker: `#app` never scrolls, and the two scrollers it does
+  // have (the sidebar and the stream itself) do not move this trigger.
 }
 
 watch(open, async (v) => {
@@ -118,6 +122,10 @@ const SIZE_PROPS = { min: STREAM_SIZE.min, max: STREAM_SIZE.max, step: 1 } as co
   flex-direction: column;
   gap: 8px;
   padding: 10px;
+  /* Content-sized: both rows carry the same fixed-width slider, so the longer label sets
+     the width and the two sliders still line up. A fixed width squeezed the English
+     labels, which are twice as wide as the Chinese ones. */
+  width: max-content;
   border-radius: var(--r-md);
   background: var(--glass);
   backdrop-filter: blur(34px) saturate(185%);

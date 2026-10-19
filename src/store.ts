@@ -170,6 +170,9 @@ export async function initSettings(persist = true) {
       settings.sub.srcSize = Math.round(oldSub.fontSize * 0.62);
       settings.sub.tgtSize = oldSub.fontSize;
     }
+    // The spread above carried the dead key into the live object, which would write it
+    // back to the file on every save — drop it once, here.
+    delete (settings.sub as { fontSize?: number }).fontSize;
   }
   settings.stream.srcSize = streamSize(settings.stream.srcSize, 13);
   settings.stream.tgtSize = streamSize(settings.stream.tgtSize, 16);
