@@ -9,8 +9,13 @@ use std::{path::Path, sync::OnceLock};
 
 static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
 
-pub fn translation_instruction(target_language_name: &str) -> String {
-    format!("Translate the following spoken text into {target_language_name}. Preserve its meaning and tone. Do not include analysis, reasoning, or <think> tags. Output only the translation, with no explanation or quotation marks.")
+pub fn translation_instruction(target_language_name: &str, retry: bool) -> String {
+    let retry_instruction = if retry {
+        format!(" Your previous attempt was not written in {target_language_name}. This time, you must translate the current segment into {target_language_name}.")
+    } else {
+        String::new()
+    };
+    format!("Translate spoken text into {target_language_name}. The input may be a fragment from a live conversation. Use recent context only to understand the current segment; translate only the current segment. Preserve its meaning and tone, and use natural wording. Do not include analysis, reasoning, or <think> tags. Output only the translation, with no explanation or quotation marks.{retry_instruction}")
 }
 
 fn strip_thinking(text: &str) -> Result<String, String> {
@@ -67,11 +72,47 @@ impl LocalTranslator {
         })
     }
 
-    pub fn translate(&mut self, text: &str, target_language: &str) -> Result<String, String> {
-        let system =
-            LlamaChatMessage::new("system".into(), translation_instruction(target_language))
-                .map_err(|e| e.to_string())?;
-        let user = LlamaChatMessage::new("user".into(), format!("{text}\n/no_think"))
+    pub fn translate(
+        &mut self,
+        text: &str,
+        target_language: &str,
+        context: &str,
+        target_is_chinese: bool,
+    ) -> Result<String, String> {
+        let output = self.generate(text, target_language, context, false)?;
+        if output.is_empty() {
+            return Err("Translation model returned an empty result".into());
+        }
+        if target_is_chinese && !contains_chinese_characters(&output) {
+            let retry = self.generate(text, target_language, context, true)?;
+            if retry.is_empty() {
+                return Err("Translation model returned an empty result".into());
+            }
+            return Ok(retry);
+        }
+        Ok(output)
+    }
+
+    fn generate(
+        &mut self,
+        text: &str,
+        target_language: &str,
+        context: &str,
+        retry: bool,
+    ) -> Result<String, String> {
+        let system = LlamaChatMessage::new(
+            "system".into(),
+            translation_instruction(target_language, retry),
+        )
+        .map_err(|e| e.to_string())?;
+        let user_text = if context.is_empty() {
+            format!("Current segment to translate:\n{text}")
+        } else {
+            format!(
+                "Recent context (for meaning only; do not translate it):\n{context}\n\nCurrent segment to translate:\n{text}"
+            )
+        };
+        let user = LlamaChatMessage::new("user".into(), format!("{user_text}\n/no_think"))
             .map_err(|e| e.to_string())?;
         let mut prompt = self
             .model
@@ -126,10 +167,15 @@ impl LocalTranslator {
         let output = strip_thinking(&String::from_utf8_lossy(&output))?
             .trim()
             .to_owned();
-        if output.is_empty() {
-            Err("Translation model returned an empty result".into())
-        } else {
-            Ok(output)
-        }
+        Ok(output)
     }
+}
+
+fn contains_chinese_characters(text: &str) -> bool {
+    text.chars().any(|character| {
+        matches!(
+            character as u32,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F
+        )
+    })
 }

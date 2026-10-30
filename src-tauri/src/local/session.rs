@@ -3,6 +3,7 @@ use crate::{
     config::Settings,
     realtime::{self, Event},
 };
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -81,6 +82,7 @@ impl LocalSession {
         let mut segmenter = SpeechSegmenter::default();
         let mut committed_until_ms = -1i64;
         let mut turn = 0u64;
+        let mut context = VecDeque::with_capacity(2);
         loop {
             let chunk = audio_rx.blocking_recv();
             if let Some(samples) = chunk {
@@ -94,6 +96,7 @@ impl LocalSession {
                         false,
                         &mut committed_until_ms,
                         &mut turn,
+                        &mut context,
                     )?;
                 }
             } else {
@@ -113,6 +116,7 @@ impl LocalSession {
                 true,
                 &mut committed_until_ms,
                 &mut turn,
+                &mut context,
             )?;
         }
         realtime::note(app, "status", "closed");
@@ -128,6 +132,7 @@ impl LocalSession {
         force: bool,
         committed_until_ms: &mut i64,
         turn: &mut u64,
+        context: &mut VecDeque<String>,
     ) -> Result<(), String> {
         let lang = (settings.source_lang != "auto").then_some(settings.source_lang.as_str());
         let segments = models
@@ -178,7 +183,18 @@ impl LocalSession {
                     ..Default::default()
                 },
             );
-            let translated = models.translator.translate(segment.text.trim(), target)?;
+            let source_text = segment.text.trim();
+            let context_text = context
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let translated = models.translator.translate(
+                source_text,
+                target,
+                &context_text,
+                settings.target_lang == "zh",
+            )?;
             realtime::emit(
                 app,
                 Event {
@@ -189,6 +205,10 @@ impl LocalSession {
                     ..Default::default()
                 },
             );
+            if context.len() == 2 {
+                context.pop_front();
+            }
+            context.push_back(source_text.to_owned());
         }
         Ok(())
     }
