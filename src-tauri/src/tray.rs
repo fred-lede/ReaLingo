@@ -108,7 +108,7 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
-            "quit" => app.exit(0),
+            "quit" => crate::request_exit(app),
             id => {
                 let _ = app.emit(ACTION_EVENT, id);
             }

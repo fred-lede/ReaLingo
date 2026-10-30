@@ -26,6 +26,7 @@ use tauri::{AppHandle, Manager, State};
 #[derive(Default)]
 pub struct AppState {
     running: Mutex<Option<Arc<AtomicBool>>>,
+    exiting: AtomicBool,
     level: Arc<AtomicU32>,
     #[cfg(any(target_os = "macos", windows))]
     local_models: Arc<Mutex<local::LocalModelCache>>,
@@ -178,16 +179,20 @@ async fn start_stream(
     #[cfg(any(target_os = "macos", windows))]
     if settings.mode == ExecutionMode::Local {
         let models = state.local_models.clone();
+        let app2 = app.clone();
+        let stop2 = stop.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let mut models = models.lock().unwrap();
-            let result = local::LocalSession::run(
-                &app,
-                &settings,
-                &target_language_name,
-                rx,
-                &stop,
-                models.models_mut(),
-            );
+            let result = {
+                let mut models = models.lock().unwrap();
+                local::LocalSession::run(
+                    &app,
+                    &settings,
+                    &target_language_name,
+                    rx,
+                    &stop,
+                    models.models_mut(),
+                )
+            };
             if let Err(error) = result {
                 realtime::note(&app, "error", error);
             }
@@ -200,12 +205,25 @@ async fn start_stream(
                     ..Default::default()
                 },
             );
+            finish_session(&app2, &stop2);
         });
     } else {
-        tauri::async_runtime::spawn(realtime::run(app, settings, rx, stop, player));
+        let app2 = app.clone();
+        let stop2 = stop.clone();
+        tauri::async_runtime::spawn(async move {
+            realtime::run(app, settings, rx, stop, player).await;
+            finish_session(&app2, &stop2);
+        });
     }
     #[cfg(target_os = "linux")]
-    tauri::async_runtime::spawn(realtime::run(app, settings, rx, stop, player));
+    {
+        let app2 = app.clone();
+        let stop2 = stop.clone();
+        tauri::async_runtime::spawn(async move {
+            realtime::run(app, settings, rx, stop, player).await;
+            finish_session(&app2, &stop2);
+        });
+    }
     Ok(())
 }
 
@@ -226,6 +244,38 @@ fn halt(state: &State<AppState>) {
         stop.store(true, Ordering::Relaxed);
     }
     state.level.store(0f32.to_bits(), Ordering::Relaxed);
+}
+
+pub(crate) fn request_exit(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    state.exiting.store(true, Ordering::SeqCst);
+    let stop = state.running.lock().unwrap().clone();
+    if let Some(stop) = stop {
+        stop.store(true, Ordering::Relaxed);
+        state.level.store(0f32.to_bits(), Ordering::Relaxed);
+    } else {
+        finish_shutdown(app, &state);
+    }
+}
+
+fn finish_session(app: &AppHandle, stop: &Arc<AtomicBool>) {
+    let state = app.state::<AppState>();
+    {
+        let mut running = state.running.lock().unwrap();
+        if running.as_ref().is_some_and(|current| Arc::ptr_eq(current, stop)) {
+            running.take();
+        }
+        if running.is_some() || !state.exiting.load(Ordering::SeqCst) {
+            return;
+        }
+    }
+    finish_shutdown(app, &state);
+}
+
+fn finish_shutdown(app: &AppHandle, state: &AppState) {
+    #[cfg(any(target_os = "macos", windows))]
+    state.local_models.lock().unwrap().clear();
+    app.exit(0);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -257,9 +307,11 @@ pub fn run() {
             // Closing the main window must end the app. The subtitle overlay is a second
             // window with skipTaskbar set, so without this the process lingers with no way
             // to reach it: the app looks closed but the overlay is still on screen.
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. })
-            {
-                window.app_handle().exit(0);
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    request_exit(&window.app_handle());
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![

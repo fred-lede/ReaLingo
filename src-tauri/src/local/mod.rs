@@ -36,4 +36,9 @@ impl LocalModelCache {
             .as_mut()
             .expect("models loaded before local session")
     }
+
+    pub fn clear(&mut self) {
+        self.models = None;
+        self.paths = None;
+    }
 }
