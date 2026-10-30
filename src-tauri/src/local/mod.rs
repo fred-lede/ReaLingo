@@ -42,3 +42,34 @@ impl LocalModelCache {
         self.paths = None;
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::LocalTranslator;
+    use std::path::Path;
+    use std::process::Command;
+
+    #[test]
+    #[ignore = "requires the local Qwen GGUF model"]
+    fn metal_process_exit_with_live_translation_model_does_not_abort() {
+        const CHILD: &str = "REALINGO_METAL_EXIT_PROBE";
+        if std::env::var_os(CHILD).is_some() {
+            crate::configure_metal_backend();
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+            let qwen = repo.join("models/translation/Qwen3-4B-Q4_K_M.gguf");
+            let mut translator = LocalTranslator::load(&qwen).unwrap();
+            translator.translate("Hello, world.", "Traditional Chinese", "", true).unwrap();
+            // A native quit can reach C++ finalizers while a Metal model is still live.
+            // Exit directly so this child checks that finalization path, not Rust Drop.
+            let _translator = translator;
+            std::process::exit(0);
+        }
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "local::tests::metal_process_exit_with_live_translation_model_does_not_abort", "--ignored"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "Metal model teardown aborted: {status}");
+    }
+}

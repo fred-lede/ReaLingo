@@ -301,8 +301,17 @@ fn finish_shutdown(app: &AppHandle, state: &AppState) {
     app.exit(0);
 }
 
+#[cfg(target_os = "macos")]
+fn configure_metal_backend() {
+    // ggml's Metal device finalizer aborts if a residency set survives native app exit.
+    // This must be set before either local model initializes its Metal backend.
+    std::env::set_var("GGML_METAL_NO_RESIDENCY", "1");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    configure_metal_backend();
     // WebKitGTK's DMA-BUF renderer produces nothing on software GL (VMs) and on some
     // proprietary drivers: the window is created and focused but never painted, which with
     // `transparent: true` looks like the app failed to start. Losing the DMA-BUF path costs
