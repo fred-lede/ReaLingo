@@ -375,6 +375,7 @@ mod tests {
     /// Qwen3.5 settings with a key for every vendor, so each test only changes what it is about.
     fn qwen(region: Region, workspace_id: &str) -> Settings {
         Settings {
+            mode: ExecutionMode::Remote,
             protocol: Protocol::Qwen35,
             api_key: "k".into(),
             openai_key: "o".into(),
@@ -388,6 +389,8 @@ mod tests {
             hotwords: BTreeMap::new(),
             speak: false,
             voice: VOICE.into(),
+            whisper_model_path: String::new(),
+            translation_model_path: String::new(),
         }
     }
 

@@ -24,7 +24,7 @@
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
@@ -148,6 +148,7 @@ pub fn start(
     rate: u32,
     tx: Sender<Vec<i16>>,
     level: Arc<AtomicU32>,
+    dropped: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     exclude_self: bool,
 ) -> Result<()> {
@@ -155,12 +156,13 @@ pub fn start(
     // thread and reports failure synchronously already.
     #[cfg(target_os = "linux")]
     if let Some(source) = id.strip_prefix(SYS).and_then(|r| r.strip_prefix(SEP)) {
+        let _ = dropped;
         return crate::pulse::start(source, rate, tx, level, stop);
     }
 
     #[cfg(windows)]
     if exclude_self && is_default_output(id) {
-        let pipe = Pipe::new(crate::wasapi::RATE, crate::wasapi::CHANNELS as usize, rate, tx, level);
+        let pipe = Pipe::new(crate::wasapi::RATE, crate::wasapi::CHANNELS as usize, rate, tx, level, dropped);
         return crate::wasapi::start(pipe, stop);
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -188,7 +190,7 @@ pub fn start(
                 return;
             }
         };
-        let stream = match build(&id, rate, tx, level) {
+        let stream = match build(&id, rate, tx, level, dropped) {
             Ok(s) => s,
             Err(e) => {
                 let _ = ready_tx.send(Err(e.to_string()));
@@ -224,14 +226,14 @@ fn is_default_output(id: &str) -> bool {
         .is_some_and(|d| d.to_string() == target)
 }
 
-fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>) -> Result<cpal::Stream> {
+fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropped: Arc<AtomicU64>) -> Result<cpal::Stream> {
     let (device, supported) = find(id)?;
     let sample_format = supported.sample_format();
     let channels = supported.channels() as usize;
     let in_rate = supported.sample_rate();
     let config: cpal::StreamConfig = supported.into();
 
-    let mut pipe = Pipe::new(in_rate, channels, rate, tx, level);
+    let mut pipe = Pipe::new(in_rate, channels, rate, tx, level, dropped);
     let sink = move |frames: &[f32]| pipe.feed(frames);
 
     match sample_format {
@@ -276,10 +278,11 @@ pub(crate) struct Pipe {
     channels: usize,
     tx: Sender<Vec<i16>>,
     level: Arc<AtomicU32>,
+    dropped: Arc<AtomicU64>,
 }
 
 impl Pipe {
-    pub(crate) fn new(in_rate: u32, channels: usize, out_rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>) -> Self {
+    pub(crate) fn new(in_rate: u32, channels: usize, out_rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropped: Arc<AtomicU64>) -> Self {
         Self {
             resampler: Resampler::new(in_rate, out_rate),
             mono: Vec::new(),
@@ -288,6 +291,7 @@ impl Pipe {
             channels,
             tx,
             level,
+            dropped,
         }
     }
 
@@ -302,7 +306,10 @@ impl Pipe {
         while self.pcm.len() >= self.chunk {
             let chunk: Vec<i16> = self.pcm.drain(..self.chunk).collect();
             // Never block the audio thread: if the uplink is backed up, drop the chunk.
-            if self.tx.try_send(chunk).is_err() {
+            if let Err(error) = self.tx.try_send(chunk) {
+                if matches!(error, tokio::sync::mpsc::error::TrySendError::Full(_)) {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                }
                 break;
             }
         }
@@ -311,4 +318,19 @@ impl Pipe {
 
 pub fn read_level(level: &AtomicU32) -> f32 {
     f32::from_bits(level.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_audio_channel_counts_dropped_chunks() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let mut pipe = Pipe::new(16_000, 1, 16_000, tx, Arc::new(AtomicU32::new(0)), dropped.clone());
+        pipe.feed(&vec![0.25; 3_200]);
+        assert_eq!(rx.try_recv().unwrap().len(), 1_600);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
 }

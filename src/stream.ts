@@ -108,7 +108,9 @@ function turnFor(key: string): Turn {
     turns.set(key, t);
     // A turn whose transcript never arrives would sit here forever. Two or three are open
     // at once in normal speech; well past that, the oldest is never coming back.
-    if (turns.size > 8) close(oldestTurn()!);
+    // Local translations can trail ASR by more than eight turns; keep their source rows
+    // until the translation worker answers or the session closes.
+    if (settings.mode !== "local" && turns.size > 8) close(oldestTurn()!);
   }
   return t;
 }

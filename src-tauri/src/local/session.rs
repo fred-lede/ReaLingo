@@ -1,14 +1,16 @@
-use super::LocalModels;
+use super::{LocalModels, LocalTranslator, WhisperEngine};
 use crate::{
     config::Settings,
     realtime::{self, Event},
 };
 use std::collections::VecDeque;
+use std::sync::mpsc::Sender;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tauri::AppHandle;
+use std::time::Instant;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::Receiver;
 
 const RATE: usize = 16_000;
@@ -68,6 +70,12 @@ impl SpeechSegmenter {
 
 pub struct LocalSession;
 
+struct TranslationJob {
+    id: String,
+    text: String,
+    queued_at: Instant,
+}
+
 impl LocalSession {
     pub fn run(
         app: &AppHandle,
@@ -79,10 +87,35 @@ impl LocalSession {
     ) -> Result<(), String> {
         realtime::note(app, "status", "connecting");
         realtime::note(app, "status", "connected");
+        let (translation_tx, translation_rx) = std::sync::mpsc::channel();
+        let (asr, translator) = (&models.asr, &mut models.translator);
+        std::thread::scope(|scope| {
+            let translation = scope.spawn(move || {
+                Self::translate_loop(app, settings, target_language_name, translator, translation_rx)
+            });
+            let asr_result = Self::run_asr(app, settings, &mut audio_rx, stop, asr, &translation_tx);
+            drop(translation_tx);
+            let translation_result = translation
+                .join()
+                .map_err(|_| "Translation worker panicked".to_string())?;
+            translation_result?;
+            asr_result
+        })?;
+        realtime::note(app, "status", "closed");
+        Ok(())
+    }
+
+    fn run_asr(
+        app: &AppHandle,
+        settings: &Settings,
+        audio_rx: &mut Receiver<Vec<i16>>,
+        stop: &Arc<AtomicBool>,
+        asr: &WhisperEngine,
+        translation_tx: &Sender<TranslationJob>,
+    ) -> Result<(), String> {
         let mut segmenter = SpeechSegmenter::default();
         let mut committed_until_ms = -1i64;
         let mut turn = 0u64;
-        let mut context = VecDeque::with_capacity(2);
         loop {
             let chunk = audio_rx.blocking_recv();
             if let Some(samples) = chunk {
@@ -90,13 +123,13 @@ impl LocalSession {
                     Self::process_window(
                         app,
                         settings,
-                        target_language_name,
-                        models,
+                        asr,
+                        translation_tx,
                         window,
                         false,
                         &mut committed_until_ms,
                         &mut turn,
-                        &mut context,
+                        audio_rx.len(),
                     )?;
                 }
             } else {
@@ -110,34 +143,39 @@ impl LocalSession {
             Self::process_window(
                 app,
                 settings,
-                target_language_name,
-                models,
+                asr,
+                translation_tx,
                 window,
                 true,
                 &mut committed_until_ms,
                 &mut turn,
-                &mut context,
+                audio_rx.len(),
             )?;
         }
-        realtime::note(app, "status", "closed");
         Ok(())
     }
 
     fn process_window(
         app: &AppHandle,
         settings: &Settings,
-        target: &str,
-        models: &mut LocalModels,
+        asr: &WhisperEngine,
+        translation_tx: &Sender<TranslationJob>,
         window: TranscriptionWindow,
         force: bool,
         committed_until_ms: &mut i64,
         turn: &mut u64,
-        context: &mut VecDeque<String>,
+        audio_queue_len: usize,
     ) -> Result<(), String> {
         let lang = (settings.source_lang != "auto").then_some(settings.source_lang.as_str());
-        let segments = models
-            .asr
-            .transcribe_samples(&window.samples, lang, window.offset_ms)?;
+        let started = Instant::now();
+        let segments = asr.transcribe_samples(&window.samples, lang, window.offset_ms)?;
+        let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
+            "type": "local.asr",
+            "windowMs": window.samples.len() * 1000 / RATE,
+            "elapsedMs": started.elapsed().as_millis(),
+            "segments": segments.len(),
+            "audioQueueChunks": audio_queue_len,
+        }));
         let window_end_ms = window.offset_ms + (window.samples.len() * 1000 / RATE) as i64;
         let stable_before_ms = if force {
             i64::MAX
@@ -183,32 +221,48 @@ impl LocalSession {
                     ..Default::default()
                 },
             );
-            let source_text = segment.text.trim();
-            let context_text = context
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join("\n");
-            let translated = models.translator.translate(
-                source_text,
-                target,
-                &context_text,
-                settings.target_lang == "zh",
-            )?;
-            realtime::emit(
-                app,
-                Event {
-                    kind: "target",
-                    text: translated,
+            translation_tx
+                .send(TranslationJob {
                     id,
-                    done: true,
-                    ..Default::default()
-                },
-            );
+                    text: segment.text.trim().to_owned(),
+                    queued_at: Instant::now(),
+                })
+                .map_err(|_| "Translation worker stopped".to_string())?;
+        }
+        Ok(())
+    }
+
+    fn translate_loop(
+        app: &AppHandle,
+        settings: &Settings,
+        target: &str,
+        translator: &mut LocalTranslator,
+        jobs: std::sync::mpsc::Receiver<TranslationJob>,
+    ) -> Result<(), String> {
+        let mut context = VecDeque::with_capacity(2);
+        for job in jobs {
+            let queue_wait_ms = job.queued_at.elapsed().as_millis();
+            let context_text = context.iter().map(String::as_str).collect::<Vec<_>>().join("\n");
+            let started = Instant::now();
+            let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh");
+            let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
+                "type": "local.translation",
+                "id": &job.id,
+                "queueWaitMs": queue_wait_ms,
+                "elapsedMs": started.elapsed().as_millis(),
+                "ok": result.is_ok(),
+            }));
+            realtime::emit(app, Event {
+                kind: "target",
+                text: result?,
+                id: job.id,
+                done: true,
+                ..Default::default()
+            });
             if context.len() == 2 {
                 context.pop_front();
             }
-            context.push_back(source_text.to_owned());
+            context.push_back(job.text);
         }
         Ok(())
     }

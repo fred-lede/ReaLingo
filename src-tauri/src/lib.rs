@@ -19,9 +19,10 @@ use audio::DeviceInfo;
 use config::{ExecutionMode, Protocol, Settings};
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
 pub struct AppState {
@@ -141,6 +142,7 @@ async fn start_stream(
     };
 
     let stop = Arc::new(AtomicBool::new(false));
+    let dropped = Arc::new(AtomicU64::new(0));
     // ~6 s of audio in flight; enough to ride out a slow handshake, small enough that a
     // wedged uplink shows up as dropped audio rather than unbounded memory.
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
@@ -148,8 +150,29 @@ async fn start_stream(
     match source {
         Source::Device { id } => {
             // Only needed when we make sound ourselves; otherwise the plain loopback path.
-            audio::start(&id, settings.sample_rate(), tx, state.level.clone(), stop.clone(), settings.speak)
+            audio::start(&id, settings.sample_rate(), tx, state.level.clone(), dropped.clone(), stop.clone(), settings.speak)
                 .map_err(|e| e.to_string())?;
+            let (app2, stop2) = (app.clone(), stop.clone());
+            tauri::async_runtime::spawn(async move {
+                let mut reported = 0;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let total = dropped.load(Ordering::Relaxed);
+                    if total > reported {
+                        let delta = total - reported;
+                        let _ = app2.emit(realtime::RAW_EVENT, serde_json::json!({
+                            "type": "audio.capture_dropped",
+                            "chunks": delta,
+                            "totalChunks": total,
+                        }));
+                        realtime::note(&app2, "warn", format!("Audio input dropped {delta} chunks while processing fell behind"));
+                        reported = total;
+                    }
+                    if stop2.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+            });
         }
         Source::File { path } => {
             let path = PathBuf::from(path);
