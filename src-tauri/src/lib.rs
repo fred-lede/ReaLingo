@@ -289,7 +289,7 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -334,6 +334,16 @@ pub fn run() {
             history::history_dir,
             tray::sync_tray
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            let state = app.state::<AppState>();
+            if !state.exiting.load(Ordering::SeqCst) {
+                api.prevent_exit();
+                request_exit(app);
+            }
+        }
+    });
 }
