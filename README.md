@@ -337,10 +337,15 @@ GIF 只有 256 色，渐变字会断层，且 1-bit 透明会在深色底上留�
 
 </details>
 
+## 本地模型模式
+
+ReaLingo 可選擇雲端服務或本地模型。首版本地模式在 Apple Silicon macOS 使用 Metal，在 Windows 使用 NVIDIA CUDA，兩者都可回退 CPU。請自行選擇 Whisper `whisper-rs` 相容 `.bin` 模型，以及含內嵌 chat template 的 GGUF 翻譯模型；ReaLingo 不會下載模型，也不會在本地模型失敗時改送雲端。建議驗收模型為 Whisper large-v3-turbo 與 Qwen3-4B Q4_K_M。
+
+本地模式保留完整語言清單，模型實際翻譯能力可能因語言而異。首版只輸出字幕；朗讀偏好會保留，待本地語音合成功能加入後再啟用。Linux 目前仍支援既有雲端模式，本地推論不支援。
+
 ## 许可
 
 [MIT](LICENSE)
-
 ## Star History
 
 <a href="https://www.star-history.com/?repos=nosugark%2Frealingo&type=date&legend=bottom-right">

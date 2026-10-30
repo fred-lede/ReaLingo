@@ -61,9 +61,19 @@ pub enum Protocol {
     Gemini,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionMode {
+    #[default]
+    Remote,
+    Local,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    #[serde(default)]
+    pub mode: ExecutionMode,
     #[serde(default)]
     pub protocol: Protocol,
     /// The Model Studio key, shared by both Qwen protocols; named before OpenAI was added.
@@ -102,6 +112,10 @@ pub struct Settings {
     pub speak: bool,
     #[serde(default = "default_voice")]
     pub voice: String,
+    #[serde(default)]
+    pub whisper_model_path: String,
+    #[serde(default)]
+    pub translation_model_path: String,
 }
 
 fn auto() -> String {
@@ -161,6 +175,9 @@ impl Settings {
 
     /// What the uplink must send: OpenAI rejects anything but 24 kHz; the rest take 16 kHz.
     pub fn sample_rate(&self) -> u32 {
+        if self.mode == ExecutionMode::Local {
+            return 16_000;
+        }
         match self.protocol {
             Protocol::Openai => 24_000,
             Protocol::Qwen35 | Protocol::Qwen38 | Protocol::Gemini => 16_000,

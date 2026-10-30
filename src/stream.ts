@@ -5,6 +5,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 // `t` is a Turn everywhere in this file, so the translator comes in under another name.
 import { t as msg } from "./i18n";
 import { settings } from "./store";
+import { langName } from "./languages";
 
 export interface Line {
   id: number;
@@ -279,12 +280,12 @@ export async function start(source: Source, speak: boolean) {
       at: Date.now(),
       source: settings.sourceLang,
       target: settings.targetLang,
-      model: settings.model,
+      model: settings.mode === "local" ? settings.translationModelPath.split(/[\\/]/).pop() || "Local" : settings.model,
       kind: source.kind,
     },
   });
   try {
-    await invoke("start_stream", { settings: { ...toRaw(settings), speak }, source });
+    await invoke("start_stream", { settings: { ...toRaw(settings), speak }, source, targetLanguageName: langName(settings.targetLang, "en") });
   } catch (e) {
     errorMsg.value = String(e);
     status.value = "error";

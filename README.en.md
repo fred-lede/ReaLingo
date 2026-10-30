@@ -357,6 +357,12 @@ conversational two-way interpreting is actually needed.
 
 </details>
 
+## Local models
+
+ReaLingo can use either cloud services or local models. The first local release targets Metal on Apple Silicon macOS and NVIDIA CUDA on Windows, with CPU fallback on both. Select your own Whisper `whisper-rs` compatible `.bin` model and a translation GGUF containing an embedded chat template. ReaLingo does not download models and never sends audio to a cloud service when local inference fails. Suggested acceptance models are Whisper large-v3-turbo and Qwen3-4B Q4_K_M.
+
+Local mode keeps the full language list; translation quality depends on the selected model. The first release outputs subtitles only. The speech preference is retained for future local text-to-speech support. Linux continues to support existing cloud modes; local inference is not supported there.
+
 ## License
 
 [MIT](LICENSE)

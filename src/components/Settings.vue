@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch, toRaw } from "vue";
+import { computed, ref, watch, toRaw, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region } from "../store";
 import { isRunning } from "../stream";
 import { PRESETS, PROTOCOLS } from "../languages";
@@ -11,6 +12,24 @@ import Sheet from "./Sheet.vue";
 defineEmits<{ close: [] }>();
 
 const endpoint = ref("");
+const hostOs = ref("");
+const hostArch = ref("");
+onMounted(async () => {
+  const platform = await invoke<{ os: string; arch: string }>("platform");
+  hostOs.value = platform.os;
+  hostArch.value = platform.arch;
+  if (platform.os === "linux" || (platform.os === "macos" && platform.arch !== "aarch64") || (platform.os === "windows" && platform.arch !== "x86_64")) settings.mode = "remote";
+});
+const localAllowed = computed(() => hostOs.value === "windows" && hostArch.value === "x86_64" || (hostOs.value === "macos" && hostArch.value === "aarch64"));
+const modeOptions = computed(() => [
+  { value: "remote", label: t("modeRemote") },
+  ...(localAllowed.value ? [{ value: "local", label: t("modeLocal") }] : []),
+]);
+const modePick = computed({ get: () => settings.mode, set: (value: string) => { if (value !== "local" || localAllowed.value) settings.mode = value as "remote" | "local"; } });
+async function chooseModel(kind: "whisper" | "translation") {
+  const path = await openDialog({ multiple: false, directory: false, filters: [{ name: kind === "whisper" ? "Whisper model" : "GGUF model", extensions: [kind === "whisper" ? "bin" : "gguf"] }] });
+  if (typeof path === "string") settings[kind === "whisper" ? "whisperModelPath" : "translationModelPath"] = path;
+}
 // An explicit source list, not watchEffect: the call awaits before touching anything else,
 // so only what is read synchronously is tracked — and a field missing from that list makes
 // the preview silently lag one change behind.
@@ -130,6 +149,27 @@ const advancedOpen = !!settings.url;
       <h3>{{ t("groupConn") }}</h3>
 
       <div class="field">
+        <span class="label">{{ t("executionMode") }}</span>
+        <Picker v-model="modePick" :options="modeOptions" :disabled="isRunning()" />
+        <small v-if="settings.mode === 'local'">{{ t("localHint") }}</small>
+        <small v-else-if="!localAllowed">{{ t("localUnsupported") }}</small>
+      </div>
+
+      <template v-if="settings.mode === 'local'">
+        <div class="field">
+          <span class="label">{{ t("whisperModel") }}</span>
+          <code class="endpoint">{{ settings.whisperModelPath || t("modelNotSelected") }}</code>
+          <button class="link" :disabled="isRunning()" @click="chooseModel('whisper')">{{ t("chooseModel") }}</button>
+        </div>
+        <div class="field">
+          <span class="label">{{ t("translationModel") }}</span>
+          <code class="endpoint">{{ settings.translationModelPath || t("modelNotSelected") }}</code>
+          <button class="link" :disabled="isRunning()" @click="chooseModel('translation')">{{ t("chooseModel") }}</button>
+        </div>
+      </template>
+
+      <template v-else>
+      <div v-if="settings.mode === 'remote'" class="field">
         <span class="label">{{ t("protocol") }}</span>
         <Picker v-model="protocolPick" :options="protocolOptions" :disabled="isRunning()" />
         <small v-if="isQwen">{{ t("protocolHint") }}</small>
@@ -145,8 +185,9 @@ const advancedOpen = !!settings.url;
           </button>
         </small>
       </label>
+      </template>
 
-      <div class="field">
+      <div v-if="settings.mode === 'remote'" class="field">
         <span class="label">{{ t("model") }}</span>
         <Picker v-model="modelPick" :options="modelOptions" :disabled="isRunning()" />
         <input
@@ -163,12 +204,12 @@ const advancedOpen = !!settings.url;
         </small>
       </div>
 
-      <div v-if="isQwen" class="field">
+      <div v-if="settings.mode === 'remote' && isQwen" class="field">
         <span class="label">{{ t("region") }}</span>
         <Picker v-model="regionPick" :options="regionOptions" :disabled="isRunning()" />
       </div>
 
-      <label v-if="isQwen" class="field">
+      <label v-if="settings.mode === 'remote' && isQwen" class="field">
         <span class="label">{{ t("workspace") }}</span>
         <!-- Beijing workspace IDs start with "llm-", every other region's with "ws-". -->
         <input
@@ -186,7 +227,7 @@ const advancedOpen = !!settings.url;
     </section>
 
     <!-- Hotwords are the group's only item, so its name rides on the title line. -->
-    <section v-if="isQwen" class="group">
+    <section v-if="settings.mode === 'remote' && isQwen" class="group">
       <h3>{{ t("groupTranslate") }} <span class="sub">{{ t("hotwords") }}</span></h3>
       <textarea
         v-model="hotwordText"
@@ -203,7 +244,7 @@ const advancedOpen = !!settings.url;
     </section>
 
     <!-- Native <details>: the open/closed state and keyboard handling come for free. -->
-    <details class="group" :open="advancedOpen">
+    <details v-if="settings.mode === 'remote'" class="group" :open="advancedOpen">
       <summary>{{ t("groupAdvanced") }}</summary>
       <div class="group-body">
         <label class="field">

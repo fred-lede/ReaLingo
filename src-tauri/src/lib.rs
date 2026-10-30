@@ -2,6 +2,8 @@ mod audio;
 pub mod config;
 pub mod decode;
 mod history;
+#[cfg(any(target_os = "macos", windows))]
+mod local;
 mod player;
 pub mod realtime;
 pub mod pulse;
@@ -14,7 +16,7 @@ mod tray;
 mod wasapi;
 
 use audio::DeviceInfo;
-use config::{Protocol, Settings};
+use config::{ExecutionMode, Protocol, Settings};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -25,6 +27,8 @@ use tauri::{AppHandle, Manager, State};
 pub struct AppState {
     running: Mutex<Option<Arc<AtomicBool>>>,
     level: Arc<AtomicU32>,
+    #[cfg(any(target_os = "macos", windows))]
+    local_models: Arc<Mutex<local::LocalModelCache>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +48,7 @@ fn list_devices() -> Vec<DeviceInfo> {
 #[serde(rename_all = "camelCase")]
 pub struct Platform {
     pub os: &'static str,
+    pub arch: &'static str,
     pub loopback: bool,
     /// False on a Linux box with no Secret Service provider: the key then stays in
     /// settings.json, and the settings page says so.
@@ -54,6 +59,7 @@ pub struct Platform {
 fn platform() -> Platform {
     Platform {
         os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
         loopback: audio::loopback_supported(),
         keyring: secret::available(),
     }
@@ -86,23 +92,48 @@ fn endpoint_url(settings: Settings) -> String {
 }
 
 #[tauri::command]
-fn start_stream(
+async fn start_stream(
     app: AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     mut settings: Settings,
     source: Source,
+    target_language_name: String,
 ) -> Result<(), String> {
     halt(&state);
 
+    #[cfg(target_os = "linux")]
+    if settings.mode == ExecutionMode::Local {
+        return Err("Local inference is supported on Apple Silicon macOS and Windows only".into());
+    }
+
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+    if settings.mode == ExecutionMode::Local {
+        return Err("Local inference requires Apple Silicon on macOS".into());
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    if settings.mode == ExecutionMode::Local {
+        let models = state.local_models.clone();
+        let whisper_path = PathBuf::from(&settings.whisper_model_path);
+        let translation_path = PathBuf::from(&settings.translation_model_path);
+        tauri::async_runtime::spawn_blocking(move || {
+            models.lock().unwrap().load_for(&whisper_path, &translation_path)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
+
     // The credential store wins over whatever the webview sent, so on a machine that has
     // one the key never has to travel through the frontend at all.
-    if let Some(key) = secret::get(settings.protocol) {
-        *settings.key_mut() = key;
+    if settings.mode == ExecutionMode::Remote {
+        if let Some(key) = secret::get(settings.protocol) {
+            *settings.key_mut() = key;
+        }
     }
 
     // Before capture: on macOS the process has to be a Core Audio client already for the
     // capture to be able to exclude it.
-    let player = if settings.speak {
+    let player = if settings.mode == ExecutionMode::Remote && settings.speak {
         Some(player::Player::start().map_err(|e| e.to_string())?)
     } else {
         None
@@ -144,6 +175,36 @@ fn start_stream(
     }
 
     *state.running.lock().unwrap() = Some(stop.clone());
+    #[cfg(any(target_os = "macos", windows))]
+    if settings.mode == ExecutionMode::Local {
+        let models = state.local_models.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut models = models.lock().unwrap();
+            let result = local::LocalSession::run(
+                &app,
+                &settings,
+                &target_language_name,
+                rx,
+                &stop,
+                models.models_mut(),
+            );
+            if let Err(error) = result {
+                realtime::note(&app, "error", error);
+            }
+            realtime::emit(
+                &app,
+                realtime::Event {
+                    kind: "status",
+                    text: "closed".into(),
+                    done: true,
+                    ..Default::default()
+                },
+            );
+        });
+    } else {
+        tauri::async_runtime::spawn(realtime::run(app, settings, rx, stop, player));
+    }
+    #[cfg(target_os = "linux")]
     tauri::async_runtime::spawn(realtime::run(app, settings, rx, stop, player));
     Ok(())
 }

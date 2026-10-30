@@ -28,6 +28,8 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "
 tokio-tungstenite = { version = "0.29.0", features = ["native-tls"] }
 
 [target.'cfg(windows)'.dependencies]
+whisper-rs = { version = "0.16", features = ["cuda"] }
+llama-cpp-2 = { version = "0.1.160", features = ["cuda"] }
 # Same major as cpal's, so it is not built twice. Process loopback is not in cpal.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
@@ -40,6 +42,8 @@ windows = { version = "0.61", features = [
 windows-core = "0.61"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+llama-cpp-2 = { version = "0.1.160", features = ["metal"] }
 # cpal's own versions; its loopback tap excludes nobody, see src/tap.rs.
 objc2 = "0.6"
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }

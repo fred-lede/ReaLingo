@@ -14,7 +14,7 @@ import Settings from "./components/Settings.vue";
 import About from "./components/About.vue";
 import History from "./components/History.vue";
 import { locale, setLocale, t } from "./i18n";
-import { canSpeak, langName, languageCodes, modelName, PROTOCOLS, VOICES } from "./languages";
+import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICES } from "./languages";
 import { check, checkUpdateAtStartup, openHome } from "./update";
 import { activeKey, settings, initSettings, resolvedTheme, SUB_SIZE, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
 import {
@@ -79,7 +79,7 @@ const canStart = computed(() =>
 );
 
 const statusKey = computed(() => {
-  if (!activeKey().trim()) return "statusNoKey" as const;
+  if (settings.mode === "remote" && !activeKey().trim()) return "statusNoKey" as const;
   if (status.value === "error") return "statusError" as const;
   if (status.value === "connecting") return "statusConnecting" as const;
   if (status.value === "stopping") return "statusStopping" as const;
@@ -125,13 +125,14 @@ const voiceOptions = computed(() =>
   }))
 );
 // Some protocols always detect the source language themselves (see PROTOCOLS).
-const autoSourceOnly = computed(() => PROTOCOLS[settings.protocol].autoSource);
+const autoSourceOnly = computed(() => settings.mode === "remote" && PROTOCOLS[settings.protocol].autoSource);
 watch(autoSourceOnly, (only) => {
   if (only) settings.sourceLang = "auto";
 }, { immediate: true });
 // Why speaking cannot happen with the current choices, if it cannot. Linux has no way to
 // leave our own playback out of a monitor source, so system audio would hear itself.
 const speakBlocked = computed(() => {
+  if (settings.mode === "local") return "localNoSpeech" as const;
   if (!canSpeak(settings.protocol, settings.targetLang)) return "speakNoLang" as const;
   if (caps.value.os === "linux" && sourceKind.value === "system") return "speakLinuxSystem" as const;
   return null;
@@ -142,7 +143,7 @@ async function toggle() {
     await stop();
     return;
   }
-  if (!activeKey().trim()) {
+  if (settings.mode === "remote" && !activeKey().trim()) {
     showSettings.value = true;
     return;
   }
@@ -150,7 +151,7 @@ async function toggle() {
     sourceKind.value === "file"
       ? { kind: "file", path: filePath.value }
       : { kind: "device", id: deviceId.value },
-    settings.speak && !speakBlocked.value
+    settings.mode === "remote" && settings.speak && !speakBlocked.value
   );
 }
 
@@ -196,9 +197,11 @@ watch(() => settings.sub.show, showOverlay);
 watch(() => settings.sub.locked, setOverlayClickThrough);
 
 /* ---------- model / languages ---------- */
-const langCodes = computed(() => languageCodes(settings.protocol, settings.model));
+const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) => l.code) : languageCodes(settings.protocol, settings.model));
 /** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
-const modelLabel = computed(() => modelName(settings.protocol, settings.model));
+const modelLabel = computed(() => settings.mode === "local"
+  ? settings.translationModelPath.split(/[\\/]/).pop() || t("modeLocal")
+  : modelName(settings.protocol, settings.model));
 
 /** The picker matches on both UI languages, so a zh user can still type "japanese". */
 const langOptions = computed(() =>
@@ -474,7 +477,7 @@ watch([lines, current], async () => {
                 @click="settings.speak = !settings.speak"
               />
             </label>
-            <p v-if="settings.speak && speakBlocked" class="hint">{{ t(speakBlocked) }}</p>
+            <p v-if="speakBlocked && (settings.speak || settings.mode === 'local')" class="hint">{{ t(speakBlocked) }}</p>
             <template v-else-if="settings.speak">
               <!-- OpenAI and Gemini pick their own voice; there is nothing to choose. -->
               <p v-if="PROTOCOLS[settings.protocol].serverVoice" class="hint">{{ t("voiceServer") }}</p>

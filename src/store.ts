@@ -55,6 +55,7 @@ export interface SubtitleStyle {
  * different schema from Qwen3/3.5. Model and URL are free-form on top of it.
  */
 export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini";
+export type ExecutionMode = "remote" | "local";
 
 /** Where each vendor's key lives. A key belongs to the account, not the protocol. */
 const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
@@ -63,6 +64,9 @@ const keyField = (p: Protocol) => KEY_FIELD[PROTOCOLS[p].vendor];
 const KEY_SLOTS = ["qwen35", "openai", "gemini"] as const;
 
 export interface Settings {
+  mode: ExecutionMode;
+  whisperModelPath: string;
+  translationModelPath: string;
   protocol: Protocol;
   apiKey: string;
   openaiKey: string;
@@ -90,6 +94,9 @@ export interface Settings {
 }
 
 export const settings = reactive<Settings>({
+  mode: "remote",
+  whisperModelPath: "",
+  translationModelPath: "",
   protocol: "qwen35",
   apiKey: "",
   openaiKey: "",
