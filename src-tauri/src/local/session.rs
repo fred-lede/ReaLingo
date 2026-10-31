@@ -1,4 +1,4 @@
-use super::{LocalModels, LocalTranslator, WhisperEngine};
+use super::{asr::SubtitleSegment, LocalModels, LocalTranslator, WhisperEngine};
 use crate::{
     config::Settings,
     realtime::{self, Event},
@@ -16,6 +16,40 @@ use tokio::sync::mpsc::Receiver;
 const RATE: usize = 16_000;
 const HOP: usize = RATE * 2;
 const MAX_PENDING: usize = RATE * 16;
+// Whisper can move a segment's start backward between overlapping windows.
+const TIMESTAMP_JITTER_MS: i64 = 1_000;
+
+fn committable(segment: &SubtitleSegment, committed_until_ms: i64, stable_before_ms: i64) -> bool {
+    segment.end_ms > committed_until_ms
+        && segment.end_ms <= stable_before_ms
+        && segment.start_ms >= committed_until_ms.saturating_sub(TIMESTAMP_JITTER_MS)
+}
+
+fn letters(text: &str) -> Vec<(char, usize)> {
+    text.char_indices()
+        .filter_map(|(index, character)| {
+            character.is_alphanumeric().then(|| {
+                (character.to_lowercase().next().unwrap_or(character), index + character.len_utf8())
+            })
+        })
+        .collect()
+}
+
+fn trim_repeated_prefix(previous: &str, current: &str) -> String {
+    let old = letters(previous);
+    let new = letters(current);
+    for count in (4..=old.len().min(new.len())).rev() {
+        if old[old.len() - count..].iter().zip(&new[..count]).all(|(a, b)| a.0 == b.0) {
+            let remaining = &current[new[count - 1].1..];
+            if new[count - 1].0.is_ascii_alphabetic()
+                && remaining.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+                continue;
+            }
+            return remaining.trim_start_matches(|c: char| !c.is_alphanumeric()).to_owned();
+        }
+    }
+    current.to_owned()
+}
 
 pub struct TranscriptionWindow {
     pub samples: Vec<f32>,
@@ -115,6 +149,7 @@ impl LocalSession {
     ) -> Result<(), String> {
         let mut segmenter = SpeechSegmenter::default();
         let mut committed_until_ms = -1i64;
+        let mut last_source = String::new();
         let mut turn = 0u64;
         loop {
             let chunk = audio_rx.blocking_recv();
@@ -128,6 +163,7 @@ impl LocalSession {
                         window,
                         false,
                         &mut committed_until_ms,
+                        &mut last_source,
                         &mut turn,
                         audio_rx.len(),
                     )?;
@@ -148,6 +184,7 @@ impl LocalSession {
                 window,
                 true,
                 &mut committed_until_ms,
+                &mut last_source,
                 &mut turn,
                 audio_rx.len(),
             )?;
@@ -163,6 +200,7 @@ impl LocalSession {
         window: TranscriptionWindow,
         force: bool,
         committed_until_ms: &mut i64,
+        last_source: &mut String,
         turn: &mut u64,
         audio_queue_len: usize,
     ) -> Result<(), String> {
@@ -183,16 +221,19 @@ impl LocalSession {
             window_end_ms - 2_000
         };
         for segment in segments {
-            if segment.end_ms <= *committed_until_ms
-                || segment.end_ms > stable_before_ms
-                || segment.start_ms < *committed_until_ms
-            {
+            if !committable(&segment, *committed_until_ms, stable_before_ms) {
                 continue;
             }
-            if segment.text.trim().is_empty() {
+            let text = if segment.start_ms < *committed_until_ms {
+                trim_repeated_prefix(last_source, &segment.text)
+            } else {
+                segment.text.clone()
+            };
+            if text.trim().is_empty() {
                 continue;
             }
             *committed_until_ms = segment.end_ms;
+            *last_source = text.clone();
             *turn += 1;
             let id = format!("local-{turn}");
             let input = format!("{id}-input");
@@ -210,7 +251,7 @@ impl LocalSession {
                 app,
                 Event {
                     kind: "source",
-                    text: segment.text.clone(),
+                    text: text.clone(),
                     lang: if settings.source_lang == "auto" {
                         String::new()
                     } else {
@@ -224,7 +265,7 @@ impl LocalSession {
             translation_tx
                 .send(TranslationJob {
                     id,
-                    text: segment.text.trim().to_owned(),
+                    text: text.trim().to_owned(),
                     queued_at: Instant::now(),
                 })
                 .map_err(|_| "Translation worker stopped".to_string())?;
@@ -265,5 +306,28 @@ impl LocalSession {
             context.push_back(job.text);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{committable, trim_repeated_prefix, SubtitleSegment};
+
+    #[test]
+    fn repeated_prefix_is_trimmed_without_losing_new_words() {
+        assert_eq!(trim_repeated_prefix("optimizations.", "optimizations. Tested CUDA presets"), "Tested CUDA presets");
+        assert_eq!(trim_repeated_prefix("into GGUF packages.", "GGUF packages."), "");
+        assert_eq!(trim_repeated_prefix("前面的人工智能", "人工智能技術正在發展"), "技術正在發展");
+        assert_eq!(trim_repeated_prefix("previous sentence", "new sentence"), "new sentence");
+    }
+
+    #[test]
+    fn timestamp_jitter_does_not_discard_a_new_sentence() {
+        let sentence = SubtitleSegment { start_ms: 16_000, end_ms: 19_000, text: "Performance modes".into() };
+        assert!(committable(&sentence, 16_400, 24_000));
+        let mostly_repeated = SubtitleSegment { start_ms: 4_000, end_ms: 9_600, text: "old text".into() };
+        assert!(!committable(&mostly_repeated, 9_260, 18_000));
+        let unfinished = SubtitleSegment { start_ms: 20_000, end_ms: 24_000, text: "unfinished".into() };
+        assert!(!committable(&unfinished, 19_000, 22_000));
     }
 }

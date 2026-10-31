@@ -143,9 +143,10 @@ async fn start_stream(
 
     let stop = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicU64::new(0));
-    // ~6 s of audio in flight; enough to ride out a slow handshake, small enough that a
-    // wedged uplink shows up as dropped audio rather than unbounded memory.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<i16>>(64);
+    // Local ASR can stall briefly on GPU work; keep more capture audio in flight there.
+    // Sustained processing slower than realtime still reports dropped audio.
+    let queue_chunks = if settings.mode == ExecutionMode::Local { 256 } else { 64 };
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<i16>>(queue_chunks);
 
     match source {
         Source::Device { id } => {
