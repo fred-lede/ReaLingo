@@ -88,6 +88,16 @@ function targetLabel(code: string): string {
   <div class="glossary">
     <p class="hint">{{ availability }} {{ t("glossaryNextSession") }}</p>
     <p v-if="mode === 'remote' && (protocol === 'qwen35' || protocol === 'qwen38')" class="hint">{{ t("glossaryQwenLimit") }}</p>
+    <div class="guide">
+      <strong>{{ t("glossaryExampleTitle") }}</strong>
+      <dl>
+        <dt>{{ t("glossarySource") }}</dt><dd>LoRA</dd>
+        <dt>{{ t("glossaryAliases") }}</dt><dd>LoRa, Loari, Low-Ri</dd>
+        <dt>{{ t("glossaryTarget") }}</dt><dd>LoRA</dd>
+        <dt>{{ t("glossaryLanguage") }}</dt><dd>{{ targetLabel("zh") }}</dd>
+      </dl>
+      <p>{{ t("glossaryExampleHelp") }}</p>
+    </div>
     <div class="toolbar">
       <span>{{ activeCount }} {{ t("glossaryActive") }} · {{ settings.glossary.length }} {{ t("glossaryStored") }}</span>
       <button class="link" :disabled="disabled" @click="add">{{ t("glossaryAdd") }}</button>
@@ -120,8 +130,14 @@ function targetLabel(code: string): string {
 
 <style scoped>
 .glossary { display: flex; flex-direction: column; gap: 10px; }
-.hint, .toolbar, .term small { color: var(--ink-3); font-size: 11.5px; line-height: 1.5; }
+.hint, .toolbar, .term small { color: var(--ink-2); font-size: 11.5px; line-height: 1.5; }
 .hint { margin: 0; }
+.guide { padding: 10px 12px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: var(--shade); color: var(--ink); font-size: 12px; line-height: 1.5; }
+.guide strong { display: block; margin-bottom: 6px; }
+.guide dl { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 3px 8px; margin: 0; }
+.guide dt { color: var(--ink-2); }
+.guide dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.guide p { margin: 8px 0 0; color: var(--ink-2); }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .entries { max-height: 220px; overflow-y: auto; border: 1px solid var(--hairline); border-radius: var(--r-sm); }
 .entry { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
@@ -134,6 +150,7 @@ function targetLabel(code: string): string {
 .editor { display: flex; flex-direction: column; gap: 9px; padding: 12px; border-radius: var(--r-sm); background: var(--shade); }
 .editor label, .language { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 12px; }
 .editor input { min-width: 0; }
+.editor input::placeholder { color: var(--ink-2); opacity: 1; }
 .actions { display: flex; justify-content: flex-end; gap: 14px; }
 .error { margin: 0; color: #d44; font-size: 12px; }
 </style>
