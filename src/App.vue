@@ -602,7 +602,7 @@ watch([lines, current], async () => {
             />
             <FontSize v-model:src="settings.stream.srcSize" v-model:tgt="settings.stream.tgtSize" />
             <button class="chip" @click="showHistory = true">{{ t("history") }}</button>
-            <button class="chip" :disabled="!lines.length" @click="lines = []">{{ t("clear") }}</button>
+            <button class="chip" :disabled="!lines.length && !rawLog.length" @click="lines = []; rawLog = []">{{ t("clear") }}</button>
             <button class="chip" :disabled="!lines.length" @click="exportAs('txt')">{{ t("exportTxt") }}</button>
             <button class="chip" :disabled="!lines.length" @click="exportAs('srt')">{{ t("exportSrt") }}</button>
           </div>
