@@ -82,7 +82,7 @@ Settings come in three groups — Connection, Translation, Advanced:
 | Model | Pick a preset or "Custom…" for any model ID. Presets: Qwen3.5 (60 languages, default), Qwen3 (18), Qwen3.8 (60), `gpt-realtime-translate` (13 output languages), `gemini-3.5-live-translate-preview` (54). The language pickers list only what the current model supports, and a language it cannot handle falls back automatically |
 | Region | Qwen only. China (Beijing) / Singapore — the only regions serving the LiveTranslate models today |
 | Workspace ID | Qwen only, **optional.** Leave blank for the shared endpoint `dashscope[-intl].aliyuncs.com`; filling it in uses your workspace's dedicated domain `{id}.{region}.maas.aliyuncs.com`. Beijing IDs look like `llm-…`, Singapore ones like `ws-…` |
-| Hotwords | Qwen only, **optional.** One `source=translation` per line, so proper nouns come out the way you want them (`人工智能=Artificial Intelligence`). Up to 1000; sent with the session, so edits apply the next time you start |
+| Terminology | **Optional.** Add, edit, or delete a canonical source, recognition aliases, preferred translation, and target language in Settings. Local mode corrects matching source aliases and prompts the translation model with terms found in the current segment only. Qwen receives applicable terms as native hotwords at session start (up to 1,000 phrases including aliases). Existing hotwords migrate with their all-target behavior. The dedicated OpenAI realtime translation and Gemini Live Translate protocols have no supported terminology setting; edits take effect on the next session |
 | Custom URL | Under Advanced, **optional.** Blank uses the API's default endpoint; otherwise it is dialled as typed — Qwen / OpenAI get `model=` added if missing, Gemini's is used as-is (its model goes in the session setup) |
 
 Advanced also shows the exact WebSocket endpoint it will dial, live (never with a Gemini key in it).
@@ -362,6 +362,8 @@ conversational two-way interpreting is actually needed.
 ReaLingo can use either cloud services or local models. The first local release targets Metal on Apple Silicon macOS and NVIDIA CUDA on Windows, with CPU fallback on both. Select your own Whisper `whisper-rs` compatible `.bin` model and a translation GGUF containing an embedded chat template. ReaLingo does not download models and never sends audio to a cloud service when local inference fails. Suggested acceptance models are Whisper large-v3-turbo and Qwen3-4B Q4_K_M.
 
 Local mode keeps the full language list; translation quality depends on the selected model. The first release outputs subtitles only. The speech preference is retained for future local text-to-speech support. Linux continues to support existing cloud modes; local inference is not supported there.
+
+Manage terminology in Settings. Recognition aliases such as `LoRa, Loari, Low-Ri` can normalize the displayed source to `LoRA`. Only terms matched in the current recognized segment enter the local translation prompt; the full saved list is not copied into every prompt. This can correct recognized proper names but cannot recover speech that Whisper omitted entirely.
 
 ## License
 

@@ -1,4 +1,4 @@
-use super::{asr::SubtitleSegment, LocalModels, LocalTranslator, WhisperEngine};
+use super::{asr::SubtitleSegment, glossary::GlossaryMatcher, LocalModels, LocalTranslator, WhisperEngine};
 use crate::{
     config::Settings,
     realtime::{self, Event},
@@ -107,6 +107,7 @@ pub struct LocalSession;
 struct TranslationJob {
     id: String,
     text: String,
+    hints: Vec<(String, String)>,
     queued_at: Instant,
 }
 
@@ -121,13 +122,14 @@ impl LocalSession {
     ) -> Result<(), String> {
         realtime::note(app, "status", "connecting");
         realtime::note(app, "status", "connected");
+        let matcher = GlossaryMatcher::new(&settings.glossary, &settings.target_lang)?;
         let (translation_tx, translation_rx) = std::sync::mpsc::channel();
         let (asr, translator) = (&models.asr, &mut models.translator);
         std::thread::scope(|scope| {
             let translation = scope.spawn(move || {
                 Self::translate_loop(app, settings, target_language_name, translator, translation_rx)
             });
-            let asr_result = Self::run_asr(app, settings, &mut audio_rx, stop, asr, &translation_tx);
+            let asr_result = Self::run_asr(app, settings, &mut audio_rx, stop, asr, &matcher, &translation_tx);
             drop(translation_tx);
             let translation_result = translation
                 .join()
@@ -145,6 +147,7 @@ impl LocalSession {
         audio_rx: &mut Receiver<Vec<i16>>,
         stop: &Arc<AtomicBool>,
         asr: &WhisperEngine,
+        matcher: &GlossaryMatcher,
         translation_tx: &Sender<TranslationJob>,
     ) -> Result<(), String> {
         let mut segmenter = SpeechSegmenter::default();
@@ -159,6 +162,7 @@ impl LocalSession {
                         app,
                         settings,
                         asr,
+                        matcher,
                         translation_tx,
                         window,
                         false,
@@ -180,6 +184,7 @@ impl LocalSession {
                 app,
                 settings,
                 asr,
+                matcher,
                 translation_tx,
                 window,
                 true,
@@ -196,6 +201,7 @@ impl LocalSession {
         app: &AppHandle,
         settings: &Settings,
         asr: &WhisperEngine,
+        matcher: &GlossaryMatcher,
         translation_tx: &Sender<TranslationJob>,
         window: TranscriptionWindow,
         force: bool,
@@ -224,16 +230,18 @@ impl LocalSession {
             if !committable(&segment, *committed_until_ms, stable_before_ms) {
                 continue;
             }
-            let text = if segment.start_ms < *committed_until_ms {
+            let raw_text = if segment.start_ms < *committed_until_ms {
                 trim_repeated_prefix(last_source, &segment.text)
             } else {
                 segment.text.clone()
             };
-            if text.trim().is_empty() {
+            if raw_text.trim().is_empty() {
                 continue;
             }
             *committed_until_ms = segment.end_ms;
-            *last_source = text.clone();
+            *last_source = raw_text.clone();
+            let matched = matcher.apply(raw_text.trim());
+            let text = matched.text;
             *turn += 1;
             let id = format!("local-{turn}");
             let input = format!("{id}-input");
@@ -265,7 +273,8 @@ impl LocalSession {
             translation_tx
                 .send(TranslationJob {
                     id,
-                    text: text.trim().to_owned(),
+                    text,
+                    hints: matched.hints,
                     queued_at: Instant::now(),
                 })
                 .map_err(|_| "Translation worker stopped".to_string())?;
@@ -285,7 +294,7 @@ impl LocalSession {
             let queue_wait_ms = job.queued_at.elapsed().as_millis();
             let context_text = context.iter().map(String::as_str).collect::<Vec<_>>().join("\n");
             let started = Instant::now();
-            let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh");
+            let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh", &job.hints);
             let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
                 "type": "local.translation",
                 "id": &job.id,
@@ -312,6 +321,20 @@ impl LocalSession {
 #[cfg(test)]
 mod tests {
     use super::{committable, trim_repeated_prefix, SubtitleSegment};
+    use crate::{config::GlossaryEntry, local::glossary::GlossaryMatcher};
+
+    #[test]
+    fn raw_overlap_dedup_precedes_glossary_correction() {
+        let matcher = GlossaryMatcher::new(&[GlossaryEntry {
+            source: "LoRA".into(), aliases: vec!["Loari".into()],
+            target: "低秩适配".into(), target_lang: "zh".into(),
+        }], "zh").unwrap();
+        let raw = trim_repeated_prefix("about Loari", "about Loari and GGUF");
+        assert_eq!(raw, "and GGUF");
+        let corrected = matcher.apply("Loari and GGUF");
+        assert_eq!(corrected.text, "LoRA and GGUF");
+        assert_eq!(corrected.hints.len(), 1);
+    }
 
     #[test]
     fn repeated_prefix_is_trimmed_without_losing_new_words() {

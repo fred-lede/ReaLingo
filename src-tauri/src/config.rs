@@ -71,6 +71,16 @@ pub enum ExecutionMode {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GlossaryEntry {
+    pub source: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub target: String,
+    pub target_lang: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)]
     pub mode: ExecutionMode,
@@ -106,6 +116,8 @@ pub struct Settings {
     /// frames readable when probing and the tests below deterministic.
     #[serde(default)]
     pub hotwords: BTreeMap<String, String>,
+    #[serde(default)]
+    pub glossary: Vec<GlossaryEntry>,
     /// Read the translation aloud. The frontend sends false where it cannot work: a target
     /// language the model will not speak, or Linux system audio, which would record it back.
     #[serde(default)]
@@ -147,6 +159,29 @@ pub fn with_param(url: &str, name: &str, value: &str) -> String {
 }
 
 impl Settings {
+    fn qwen_phrases(&self) -> BTreeMap<String, String> {
+        let mut phrases = BTreeMap::new();
+        let mut insert = |source: &str, target: &str| {
+            let source = source.trim();
+            let target = target.trim();
+            if !source.is_empty() && !target.is_empty() && !source.contains(['\r', '\n']) && !target.contains(['\r', '\n']) {
+                phrases.insert(source.to_owned(), target.to_owned());
+            }
+        };
+        for (source, target) in &self.hotwords {
+            insert(source, target);
+        }
+        for language in ["*", self.target_lang.as_str()] {
+            for entry in self.glossary.iter().filter(|entry| entry.target_lang == language) {
+                insert(&entry.source, &entry.target);
+                for alias in &entry.aliases {
+                    insert(alias, &entry.target);
+                }
+            }
+        }
+        phrases.into_iter().take(1_000).collect()
+    }
+
     pub fn key(&self) -> &str {
         match self.protocol {
             Protocol::Qwen35 | Protocol::Qwen38 => &self.api_key,
@@ -315,8 +350,9 @@ impl Settings {
         let mut translation = serde_json::json!({ "language": self.target_lang });
         // Only when there is something to send: an empty `corpus` is not a documented
         // shape, and the endpoint's reaction to one is anyone's guess.
-        if !self.hotwords.is_empty() {
-            translation["corpus"] = serde_json::json!({ "phrases": self.hotwords });
+        let phrases = self.qwen_phrases();
+        if !phrases.is_empty() {
+            translation["corpus"] = serde_json::json!({ "phrases": phrases });
         }
         // Qwen3.8 supplies source transcription automatically. Its session schema uses
         // output_modalities and nested audio settings, not the earlier ASR/VAD fields.
@@ -387,6 +423,7 @@ mod tests {
             target_lang: "en".into(),
             model: MODEL_QWEN3_5.into(),
             hotwords: BTreeMap::new(),
+            glossary: Vec::new(),
             speak: false,
             voice: VOICE.into(),
             whisper_model_path: String::new(),
@@ -458,6 +495,43 @@ mod tests {
         with.hotwords.insert("人工智能".into(), "Artificial Intelligence".into());
         let phrases = &with.session_update()["session"]["translation"]["corpus"]["phrases"];
         assert_eq!(phrases["人工智能"], "Artificial Intelligence");
+    }
+
+    #[test]
+    fn glossary_phrases_follow_target_and_specific_entries_win() {
+        let mut settings = qwen(Region::Beijing, "");
+        settings.target_lang = "zh".into();
+        settings.glossary = vec![
+            GlossaryEntry { source: "LoRA".into(), aliases: vec![], target: "old".into(), target_lang: "*".into() },
+            GlossaryEntry { source: "LoRA".into(), aliases: vec!["Loari".into()], target: "低秩适配".into(), target_lang: "zh".into() },
+            GlossaryEntry { source: "GGUF".into(), aliases: vec![], target: "model".into(), target_lang: "en".into() },
+        ];
+        let phrases = &settings.session_update()["session"]["translation"]["corpus"]["phrases"];
+        assert_eq!(phrases["LoRA"], "低秩适配");
+        assert_eq!(phrases["Loari"], "低秩适配");
+        assert!(phrases.get("GGUF").is_none());
+    }
+
+    #[test]
+    fn qwen_corpus_never_exceeds_one_thousand_phrases() {
+        let mut settings = qwen(Region::Beijing, "");
+        for n in 0..1_005 {
+            settings.hotwords.insert(format!("term{n:04}"), "value".into());
+        }
+        let phrases = &settings.session_update()["session"]["translation"]["corpus"]["phrases"];
+        assert_eq!(phrases.as_object().unwrap().len(), 1_000);
+    }
+
+    #[test]
+    fn glossary_is_absent_from_openai_and_gemini_payloads() {
+        let mut settings = qwen(Region::Beijing, "");
+        settings.glossary.push(GlossaryEntry { source: "LoRA".into(), aliases: vec![], target: "低秩适配".into(), target_lang: "zh".into() });
+        settings.protocol = Protocol::Openai;
+        assert!(!settings.session_update().to_string().contains("LoRA"));
+        settings.protocol = Protocol::Gemini;
+        assert!(!settings.session_update().to_string().contains("LoRA"));
+        let old: Settings = serde_json::from_value(serde_json::json!({ "protocol": "qwen35" })).unwrap();
+        assert!(old.glossary.is_empty());
     }
 
     #[test]

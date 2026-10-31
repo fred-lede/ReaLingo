@@ -1,4 +1,5 @@
 mod asr;
+mod glossary;
 mod session;
 mod translation;
 
@@ -58,7 +59,7 @@ mod tests {
             let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
             let qwen = repo.join("models/translation/Qwen3-4B-Q4_K_M.gguf");
             let mut translator = LocalTranslator::load(&qwen).unwrap();
-            translator.translate("Hello, world.", "Traditional Chinese", "", true).unwrap();
+            translator.translate("Hello, world.", "Traditional Chinese", "", true, &[]).unwrap();
             // A native quit can reach C++ finalizers while a Metal model is still live.
             // Exit directly so this child checks that finalization path, not Rust Drop.
             let _translator = translator;
@@ -72,4 +73,5 @@ mod tests {
             .unwrap();
         assert!(status.success(), "Metal model teardown aborted: {status}");
     }
+
 }

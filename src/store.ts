@@ -2,6 +2,7 @@ import { reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { MODEL_QWEN3_5, MODEL_QWEN3_8, PROTOCOLS, type Vendor } from "./languages";
+import { migrateGlossary, type GlossaryEntry } from "./glossary";
 
 /** Only the regions that serve the LiveTranslate models — see `config::Region` in Rust. */
 export type Region = "beijing" | "singapore";
@@ -83,8 +84,9 @@ export interface Settings {
   model: string;
   /** Off by default: translations are private, so nothing hits the disk unless asked. */
   history: boolean;
-  /** Hotwords: source term -> preferred translation. Sent with `session.update`. */
+  /** Legacy hotwords are migrated into glossary when saved settings load. */
   hotwords: Record<string, string>;
+  glossary: GlossaryEntry[];
   /** Read the translation aloud. Only takes effect where `canSpeak` allows it. */
   speak: boolean;
   voice: string;
@@ -111,6 +113,7 @@ export const settings = reactive<Settings>({
   model: MODEL_QWEN3_5,
   history: false,
   hotwords: {},
+  glossary: [],
   speak: false,
   voice: "Tina",
   theme: "system",
@@ -168,6 +171,8 @@ export async function initSettings(persist = true) {
       sub: { ...settings.sub, ...(saved.sub ?? {}) },
       stream: { ...settings.stream, ...(saved.stream ?? {}) },
     });
+    settings.glossary = migrateGlossary(saved);
+    settings.hotwords = {};
     // Saved before the protocol was a setting: the model was what picked the 3.8 schema.
     if (!saved.protocol) settings.protocol = saved.model === MODEL_QWEN3_8 ? "qwen38" : "qwen35";
     // Before the two rows were sized separately, the bar had one `fontSize` and the source
