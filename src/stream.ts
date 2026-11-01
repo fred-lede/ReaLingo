@@ -8,11 +8,18 @@ import { settings } from "./store";
 import { langName } from "./languages";
 import { emptyLocalDiagnostics, updateLocalDiagnostics } from "./local-diagnostics";
 
+export interface SourcePart {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
 export interface Line {
   id: number;
   source: string;
   target: string;
   at: number;
+  parts?: SourcePart[];
 }
 
 /** `stopping`: input has ended, the last sentence is still on its way. */
@@ -76,6 +83,7 @@ interface Turn {
   key: string;
   input: string;
   source: string;
+  parts: SourcePart[];
   sourceStash: string;
   target: string;
   targetStash: string;
@@ -100,6 +108,7 @@ function turnFor(key: string): Turn {
       key,
       input: "",
       source: "",
+      parts: [],
       sourceStash: "",
       target: "",
       targetStash: "",
@@ -122,7 +131,7 @@ function publish(t: Turn) {
   if (!t.source && !t.target) return;
   if (t.lineId === undefined) {
     t.lineId = nextId++;
-    lines.value.push({ id: t.lineId, source: t.source, target: t.target, at: t.at });
+    lines.value.push({ id: t.lineId, source: t.source, target: t.target, at: t.at, parts: [...t.parts] });
     if (lines.value.length > 500) lines.value.splice(0, lines.value.length - 500);
     return;
   }
@@ -130,6 +139,7 @@ function publish(t: Turn) {
   if (row) {
     row.source = t.source;
     row.target = t.target;
+    row.parts = [...t.parts];
   }
 }
 
@@ -142,7 +152,7 @@ function settle(t: Turn) {
 function close(t: Turn) {
   publish(t);
   if (t.source || t.target) {
-    record("history_append", { entry: { at: t.at, source: t.source, target: t.target } });
+    record("history_append", { entry: { at: t.at, source: t.source, target: t.target, ...(t.parts.length ? { parts: t.parts } : {}) } });
   }
   turns.delete(t.key);
   if (t.input) byInput.delete(t.input);
@@ -181,6 +191,8 @@ interface RtEvent {
   /** Turn id: the assistant item for translations, the input item for transcripts. */
   id: string;
   done: boolean;
+  startMs?: number;
+  endMs?: number;
 }
 
 void listen<RtEvent>("rt://event", ({ payload: e }) => {
@@ -208,6 +220,10 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
       const key = byInput.get(e.id) ?? newestTurn()?.key;
       if (!key) break;
       const t = turnFor(key);
+      if (e.startMs !== undefined && e.endMs !== undefined) {
+        const partText = e.text.startsWith(t.source) ? e.text.slice(t.source.length).replace(/^\n/, "") : e.text;
+        t.parts.push({ startMs: e.startMs, endMs: e.endMs, text: partText });
+      }
       t.source = e.text;
       t.sourceStash = e.done ? "" : e.stash;
       if (e.lang) detectedLang.value = e.lang;

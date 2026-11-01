@@ -1,6 +1,6 @@
 use crate::config::GlossaryEntry;
 use aho_corasick::AhoCorasick;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 struct Pattern {
     source: String,
@@ -92,24 +92,6 @@ impl GlossaryMatcher {
             patterns,
             automaton,
         })
-    }
-
-    pub fn asr_terms(&self) -> Vec<&str> {
-        let mut seen = HashSet::new();
-        let sources: Vec<_> = self.patterns
-            .iter()
-            .filter_map(|pattern| {
-                seen.insert(pattern.source.as_str())
-                    .then_some(pattern.source.as_str())
-            })
-            .collect();
-        let mut spellings = HashMap::new();
-        for source in &sources {
-            *spellings.entry(source.to_lowercase()).or_insert(0usize) += 1;
-        }
-        sources.into_iter()
-            .filter(|source| spellings[&source.to_lowercase()] == 1)
-            .collect()
     }
 
     pub fn possible_terms(&self, text: &str, context: &str) -> Vec<(String, String)> {
@@ -265,7 +247,6 @@ mod tests {
         assert!(matcher
             .possible_terms("LoRa", "We discussed LoRA models")
             .is_empty());
-        assert!(matcher.asr_terms().is_empty());
     }
 
     #[test]
@@ -282,20 +263,6 @@ mod tests {
             matcher.apply("RadioTerm").hints,
             vec![("RadioTerm".into(), "radio".into())]
         );
-    }
-
-    #[test]
-    fn asr_terms_use_active_canonical_spellings_once() {
-        let matcher = GlossaryMatcher::new(
-            &[
-                term("LoRA", &["Loari", "Low-Ri"], "LoRA", "zh"),
-                term("GGUF", &[], "GGUF", "zh"),
-                term("CUDA", &[], "CUDA", "en"),
-            ],
-            "zh",
-        )
-        .unwrap();
-        assert_eq!(matcher.asr_terms(), vec!["LoRA", "GGUF"]);
     }
 
     #[test]

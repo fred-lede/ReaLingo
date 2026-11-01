@@ -148,6 +148,8 @@ async fn start_stream(
     let queue_chunks = if settings.mode == ExecutionMode::Local { 256 } else { 64 };
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<i16>>(queue_chunks);
 
+    #[cfg(any(target_os = "macos", windows))]
+    let live_capture = matches!(&source, Source::Device { .. });
     match source {
         Source::Device { id } => {
             // Only needed when we make sound ourselves; otherwise the plain loopback path.
@@ -212,6 +214,7 @@ async fn start_stream(
                     &app,
                     &settings,
                     &target_language_name,
+                    live_capture,
                     rx,
                     &stop,
                     models.models_mut(),

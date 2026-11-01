@@ -224,7 +224,7 @@ async function remove(id: string) {
   gap: 14px;
   padding-right: 4px;
 }
-.src { margin: 0 0 3px; font-size: 12.5px; line-height: 1.55; color: var(--ink-3); user-select: text; }
+.src { margin: 0 0 3px; font-size: 12.5px; line-height: 1.55; color: var(--ink-3); white-space: pre-line; user-select: text; }
 .tgt { margin: 0; font-size: 15px; line-height: 1.55; font-weight: 600; user-select: text; }
 
 .blank {

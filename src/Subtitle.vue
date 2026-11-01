@@ -275,7 +275,7 @@ const outline = computed(() =>
    plate draggable instead of just its padding. */
 p { margin: 0; line-height: 1.4; word-break: break-word; pointer-events: none; }
 
-.src { font-size: var(--src-fs); font-weight: 500; margin-bottom: 0.2em; opacity: 0.92; }
+.src { font-size: var(--src-fs); font-weight: 500; margin-bottom: 0.2em; opacity: 0.92; white-space: pre-line; }
 .tgt { font-size: var(--tgt-fs); font-weight: 700; letter-spacing: -0.01em; }
 
 /* One line per row; `tail()` decides alignment — centred while it fits, then scrolled to

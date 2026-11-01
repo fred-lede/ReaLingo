@@ -29,10 +29,20 @@ pub struct Meta {
 
 /// One finished sentence: its transcript and its translation.
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcePart {
+    start_ms: i64,
+    end_ms: i64,
+    text: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Entry {
     at: i64,
     source: String,
     target: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<SourcePart>,
 }
 
 /// What the history panel lists: the session's own meta line plus what it costs.
@@ -191,5 +201,14 @@ mod tests {
         let e: Entry = serde_json::from_str(entry).unwrap();
         assert_eq!(e.source, "你好");
         assert_eq!(serde_json::to_string(&e).unwrap(), entry);
+    }
+
+    #[test]
+    fn grouped_history_keeps_each_source_time_without_changing_old_lines() {
+        let json = r#"{"at":1758153806000,"source":"for MIT\nfor a PhD","target":"在麻省理工學院攻讀博士","parts":[{"startMs":1000,"endMs":2000,"text":"for MIT"},{"startMs":2000,"endMs":3000,"text":"for a PhD"}]}"#;
+        let entry: Entry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.parts.len(), 2);
+        assert_eq!(entry.parts[0].start_ms, 1_000);
+        assert_eq!(serde_json::to_string(&entry).unwrap(), json);
     }
 }

@@ -778,7 +778,7 @@ watch([lines, current], async () => {
 
 .line-item { animation: slidein 0.35s var(--ease); }
 @keyframes slidein { from { opacity: 0; transform: translateY(8px); } }
-.src { margin: 0 0 3px; font-size: var(--src-fs, 13px); line-height: 1.55; color: var(--ink-3); user-select: text; }
+.src { margin: 0 0 3px; font-size: var(--src-fs, 13px); line-height: 1.55; color: var(--ink-3); white-space: pre-line; user-select: text; }
 .tgt { margin: 0; font-size: var(--tgt-fs, 16.5px); line-height: 1.55; font-weight: 600; letter-spacing: -0.005em; user-select: text; }
 .live .tgt { color: var(--accent); }
 

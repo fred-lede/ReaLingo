@@ -45,6 +45,10 @@ const QUIET_END: Duration = Duration::from_secs(4);
 pub struct Event {
     pub kind: &'static str,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<i64>,
     /// Unconfirmed tail — worth showing, but greyed out; it can still change.
     pub stash: String,
     /// Source language the model detected (transcript events only).
@@ -409,6 +413,7 @@ fn classify(v: &Value) -> Option<Event> {
             lang: field("language"),
             id: field("item_id"),
             done: false,
+            ..Default::default()
         },
         "conversation.item.input_audio_transcription.completed" => Event {
             kind: "source",
@@ -459,6 +464,24 @@ fn classify(v: &Value) -> Option<Event> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn local_source_times_serialize_without_changing_remote_events() {
+        let local = Event {
+            kind: "source",
+            text: "for MIT".into(),
+            start_ms: Some(1_000),
+            end_ms: Some(2_000),
+            ..Default::default()
+        };
+        let local = serde_json::to_value(local).unwrap();
+        assert_eq!(local["startMs"], 1_000);
+        assert_eq!(local["endMs"], 2_000);
+
+        let remote = serde_json::to_value(Event { kind: "source", ..Default::default() }).unwrap();
+        assert!(remote.get("startMs").is_none());
+        assert!(remote.get("endMs").is_none());
+    }
 
     #[test]
     fn qwen3_8_deltas_accumulate_per_item_and_finish_without_duplicates() {
