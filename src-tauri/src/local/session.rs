@@ -125,11 +125,13 @@ impl LocalSession {
         let matcher = GlossaryMatcher::new(&settings.glossary, &settings.target_lang)?;
         let (translation_tx, translation_rx) = std::sync::mpsc::channel();
         let (asr, translator) = (&models.asr, &mut models.translator);
+        let asr_prompt_tokens = asr.prompt_tokens(&matcher.asr_terms());
         std::thread::scope(|scope| {
+            let translation_matcher = &matcher;
             let translation = scope.spawn(move || {
-                Self::translate_loop(app, settings, target_language_name, translator, translation_rx)
+                Self::translate_loop(app, settings, target_language_name, translator, translation_matcher, translation_rx)
             });
-            let asr_result = Self::run_asr(app, settings, &mut audio_rx, stop, asr, &matcher, &translation_tx);
+            let asr_result = Self::run_asr(app, settings, &mut audio_rx, stop, asr, &matcher, &asr_prompt_tokens, &translation_tx);
             drop(translation_tx);
             let translation_result = translation
                 .join()
@@ -148,6 +150,7 @@ impl LocalSession {
         stop: &Arc<AtomicBool>,
         asr: &WhisperEngine,
         matcher: &GlossaryMatcher,
+        asr_prompt_tokens: &[i32],
         translation_tx: &Sender<TranslationJob>,
     ) -> Result<(), String> {
         let mut segmenter = SpeechSegmenter::default();
@@ -163,6 +166,7 @@ impl LocalSession {
                         settings,
                         asr,
                         matcher,
+                        asr_prompt_tokens,
                         translation_tx,
                         window,
                         false,
@@ -185,6 +189,7 @@ impl LocalSession {
                 settings,
                 asr,
                 matcher,
+                asr_prompt_tokens,
                 translation_tx,
                 window,
                 true,
@@ -202,6 +207,7 @@ impl LocalSession {
         settings: &Settings,
         asr: &WhisperEngine,
         matcher: &GlossaryMatcher,
+        asr_prompt_tokens: &[i32],
         translation_tx: &Sender<TranslationJob>,
         window: TranscriptionWindow,
         force: bool,
@@ -212,7 +218,7 @@ impl LocalSession {
     ) -> Result<(), String> {
         let lang = (settings.source_lang != "auto").then_some(settings.source_lang.as_str());
         let started = Instant::now();
-        let segments = asr.transcribe_samples(&window.samples, lang, window.offset_ms)?;
+        let segments = asr.transcribe_samples(&window.samples, lang, asr_prompt_tokens, window.offset_ms)?;
         let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
             "type": "local.asr",
             "windowMs": window.samples.len() * 1000 / RATE,
@@ -287,14 +293,17 @@ impl LocalSession {
         settings: &Settings,
         target: &str,
         translator: &mut LocalTranslator,
+        matcher: &GlossaryMatcher,
         jobs: std::sync::mpsc::Receiver<TranslationJob>,
     ) -> Result<(), String> {
         let mut context = VecDeque::with_capacity(2);
         for job in jobs {
             let queue_wait_ms = job.queued_at.elapsed().as_millis();
             let context_text = context.iter().map(String::as_str).collect::<Vec<_>>().join("\n");
+            let possible = matcher.possible_terms(&job.text, &context_text).into_iter()
+                .filter(|term| !job.hints.contains(term)).collect::<Vec<_>>();
             let started = Instant::now();
-            let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh", &job.hints);
+            let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh", &job.hints, &possible);
             let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
                 "type": "local.translation",
                 "id": &job.id,

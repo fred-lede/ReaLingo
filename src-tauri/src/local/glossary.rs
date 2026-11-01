@@ -1,10 +1,11 @@
 use crate::config::GlossaryEntry;
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
-use std::collections::HashSet;
+use aho_corasick::AhoCorasick;
+use std::collections::{HashMap, HashSet};
 
 struct Pattern {
     source: String,
     target: String,
+    is_alias: bool,
 }
 
 pub struct GlossaryMatcher {
@@ -44,15 +45,13 @@ impl GlossaryMatcher {
         let specific_sources: HashSet<_> = entries
             .iter()
             .filter(|entry| entry.target_lang == target_lang)
-            .map(|entry| entry.source.to_ascii_lowercase())
+            .map(|entry| entry.source.trim())
             .collect();
         for entry in entries
             .iter()
             .filter(|entry| entry.target_lang == "*" || entry.target_lang == target_lang)
         {
-            if entry.target_lang == "*"
-                && specific_sources.contains(&entry.source.to_ascii_lowercase())
-            {
+            if entry.target_lang == "*" && specific_sources.contains(entry.source.trim()) {
                 continue;
             }
             let source = entry.source.trim();
@@ -64,32 +63,87 @@ impl GlossaryMatcher {
             {
                 continue;
             }
-            for needle in std::iter::once(&entry.source).chain(entry.aliases.iter()) {
+            let source_folded = source.to_lowercase();
+            for (index, needle) in std::iter::once(&entry.source)
+                .chain(entry.aliases.iter())
+                .enumerate()
+            {
                 let needle = needle.trim();
-                if needle.is_empty() || needle.contains(['\r', '\n']) {
+                if needle.is_empty()
+                    || needle.contains(['\r', '\n'])
+                    || (index > 0 && needle.to_lowercase() == source_folded)
+                {
                     continue;
                 }
                 needles.push(needle.to_owned());
                 patterns.push(Pattern {
                     source: source.to_owned(),
                     target: target.to_owned(),
+                    is_alias: index > 0,
                 });
             }
         }
         let automaton = if needles.is_empty() {
             None
         } else {
-            Some(
-                AhoCorasickBuilder::new()
-                    .ascii_case_insensitive(true)
-                    .build(&needles)
-                    .map_err(|error| error.to_string())?,
-            )
+            Some(AhoCorasick::new(&needles).map_err(|error| error.to_string())?)
         };
         Ok(Self {
             patterns,
             automaton,
         })
+    }
+
+    pub fn asr_terms(&self) -> Vec<&str> {
+        let mut seen = HashSet::new();
+        let sources: Vec<_> = self.patterns
+            .iter()
+            .filter_map(|pattern| {
+                seen.insert(pattern.source.as_str())
+                    .then_some(pattern.source.as_str())
+            })
+            .collect();
+        let mut spellings = HashMap::new();
+        for source in &sources {
+            *spellings.entry(source.to_lowercase()).or_insert(0usize) += 1;
+        }
+        sources.into_iter()
+            .filter(|source| spellings[&source.to_lowercase()] == 1)
+            .collect()
+    }
+
+    pub fn possible_terms(&self, text: &str, context: &str) -> Vec<(String, String)> {
+        if !self.apply(text).hints.is_empty() {
+            return Vec::new();
+        }
+        self.apply(context)
+            .hints
+            .into_iter()
+            .filter(|(source, _)| {
+                let source = source.as_str();
+                if source.len() < 4 || !source.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+                    return false;
+                }
+                let canonical = source.to_ascii_lowercase();
+                text.split(|character: char| !character.is_ascii_alphanumeric())
+                    .any(|word| {
+                        if word.is_empty() || word == source {
+                            return false;
+                        }
+                        let candidate = word.to_ascii_lowercase();
+                        candidate == canonical
+                            || (candidate.len() >= 5
+                                && candidate.len() == canonical.len()
+                                && candidate.as_bytes()[0] == canonical.as_bytes()[0]
+                                && candidate
+                                    .bytes()
+                                    .zip(canonical.bytes())
+                                    .filter(|(left, right)| left != right)
+                                    .count()
+                                    == 1)
+                    })
+            })
+            .collect()
     }
 
     pub fn apply(&self, text: &str) -> MatchResult {
@@ -114,6 +168,7 @@ impl GlossaryMatcher {
             (
                 std::cmp::Reverse(found.end() - found.start()),
                 found.start(),
+                self.patterns[found.pattern().as_usize()].is_alias,
                 found.pattern().as_usize(),
             )
         });
@@ -170,9 +225,110 @@ mod tests {
             "zh",
         )
         .unwrap();
-        let result = matcher.apply("LoRa, Loari and Low-Ri, not Flora");
+        let result = matcher.apply("LoRA, Loari and Low-Ri, not Flora");
         assert_eq!(result.text, "LoRA, LoRA and LoRA, not Flora");
         assert_eq!(result.hints, vec![("LoRA".into(), "低秩适配".into())]);
+    }
+
+    #[test]
+    fn case_only_variations_are_not_rewritten_or_hinted() {
+        let matcher =
+            GlossaryMatcher::new(&[term("LoRA", &["LoRa", "Low-Ri"], "LoRA", "zh")], "zh").unwrap();
+        let result = matcher.apply("LoRa and LoRA and Low-Ri");
+        assert_eq!(result.text, "LoRa and LoRA and LoRA");
+        assert_eq!(result.hints, vec![("LoRA".into(), "LoRA".into())]);
+        assert!(matcher.apply("LoRa").hints.is_empty());
+        let unicode =
+            GlossaryMatcher::new(&[term("Москва", &["МОСКВА"], "Moscow", "en")], "en").unwrap();
+        assert!(unicode.apply("МОСКВА").hints.is_empty());
+    }
+
+    #[test]
+    fn distinct_canonical_spellings_survive_wildcard_override() {
+        let matcher = GlossaryMatcher::new(
+            &[
+                term("LoRa", &[], "无线技术", "*"),
+                term("LoRA", &[], "低秩适配", "zh"),
+            ],
+            "zh",
+        )
+        .unwrap();
+        let result = matcher.apply("LoRa and LoRA");
+        assert_eq!(result.text, "LoRa and LoRA");
+        assert_eq!(
+            result.hints,
+            vec![
+                ("LoRa".into(), "无线技术".into()),
+                ("LoRA".into(), "低秩适配".into())
+            ]
+        );
+        assert!(matcher
+            .possible_terms("LoRa", "We discussed LoRA models")
+            .is_empty());
+        assert!(matcher.asr_terms().is_empty());
+    }
+
+    #[test]
+    fn canonical_term_beats_another_terms_identical_alias() {
+        let matcher = GlossaryMatcher::new(
+            &[
+                term("LoRA", &["RadioTerm"], "adaptation", "en"),
+                term("RadioTerm", &[], "radio", "en"),
+            ],
+            "en",
+        )
+        .unwrap();
+        assert_eq!(
+            matcher.apply("RadioTerm").hints,
+            vec![("RadioTerm".into(), "radio".into())]
+        );
+    }
+
+    #[test]
+    fn asr_terms_use_active_canonical_spellings_once() {
+        let matcher = GlossaryMatcher::new(
+            &[
+                term("LoRA", &["Loari", "Low-Ri"], "LoRA", "zh"),
+                term("GGUF", &[], "GGUF", "zh"),
+                term("CUDA", &[], "CUDA", "en"),
+            ],
+            "zh",
+        )
+        .unwrap();
+        assert_eq!(matcher.asr_terms(), vec!["LoRA", "GGUF"]);
+    }
+
+    #[test]
+    fn near_match_needs_recent_exact_context_and_never_rewrites_source() {
+        let matcher = GlossaryMatcher::new(
+            &[
+                term("LoRA", &[], "LoRA", "zh"),
+                term("PyTorch", &[], "PyTorch", "zh"),
+            ],
+            "zh",
+        )
+        .unwrap();
+        assert_eq!(
+            matcher.apply("LoRa uses radio waves").text,
+            "LoRa uses radio waves"
+        );
+        assert!(matcher
+            .possible_terms("LoRa uses radio waves", "radio and antenna")
+            .is_empty());
+        assert_eq!(
+            matcher.possible_terms("LoRa adapter", "We discussed LoRA models"),
+            vec![("LoRA".into(), "LoRA".into())]
+        );
+        assert!(matcher
+            .possible_terms("Flora grows", "We discussed LoRA models")
+            .is_empty());
+        assert_eq!(
+            matcher.possible_terms("PyTorcn models", "We used PyTorch"),
+            vec![("PyTorch".into(), "PyTorch".into())]
+        );
+        assert!(matcher
+            .possible_terms("PyTorch models", "We used PyTorch")
+            .is_empty());
     }
 
     #[test]

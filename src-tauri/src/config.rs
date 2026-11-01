@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 pub const MODEL_QWEN3_5: &str = "qwen3.5-livetranslate-flash-realtime";
 pub const MODEL_QWEN3_8: &str = "qwen3.8-livetranslate-flash-realtime";
@@ -161,6 +161,11 @@ pub fn with_param(url: &str, name: &str, value: &str) -> String {
 impl Settings {
     fn qwen_phrases(&self) -> BTreeMap<String, String> {
         let mut phrases = BTreeMap::new();
+        let canonical_keys: HashSet<_> = self.hotwords.keys().map(|source| source.trim())
+            .chain(self.glossary.iter()
+                .filter(|entry| entry.target_lang == "*" || entry.target_lang == self.target_lang)
+                .map(|entry| entry.source.trim()))
+            .collect();
         let mut insert = |source: &str, target: &str| {
             let source = source.trim();
             let target = target.trim();
@@ -174,8 +179,12 @@ impl Settings {
         for language in ["*", self.target_lang.as_str()] {
             for entry in self.glossary.iter().filter(|entry| entry.target_lang == language) {
                 insert(&entry.source, &entry.target);
+                let source_folded = entry.source.trim().to_lowercase();
                 for alias in &entry.aliases {
-                    insert(alias, &entry.target);
+                    if alias.trim().to_lowercase() != source_folded
+                        && !canonical_keys.contains(alias.trim()) {
+                        insert(alias, &entry.target);
+                    }
                 }
             }
         }
@@ -510,6 +519,38 @@ mod tests {
         assert_eq!(phrases["LoRA"], "低秩适配");
         assert_eq!(phrases["Loari"], "低秩适配");
         assert!(phrases.get("GGUF").is_none());
+    }
+
+    #[test]
+    fn qwen_skips_case_only_aliases() {
+        let mut settings = qwen(Region::Beijing, "");
+        settings.target_lang = "zh".into();
+        settings.glossary.push(GlossaryEntry {
+            source: "LoRA".into(), aliases: vec!["LoRa".into(), "Low-Ri".into()],
+            target: "LoRA".into(), target_lang: "zh".into(),
+        });
+        let phrases = &settings.session_update()["session"]["translation"]["corpus"]["phrases"];
+        assert_eq!(phrases["LoRA"], "LoRA");
+        assert_eq!(phrases["Low-Ri"], "LoRA");
+        assert!(phrases.get("LoRa").is_none());
+        settings.glossary.push(GlossaryEntry {
+            source: "Москва".into(), aliases: vec!["МОСКВА".into()],
+            target: "Moscow".into(), target_lang: "zh".into(),
+        });
+        let phrases = &settings.session_update()["session"]["translation"]["corpus"]["phrases"];
+        assert!(phrases.get("МОСКВА").is_none());
+    }
+
+    #[test]
+    fn qwen_canonical_phrase_beats_another_terms_alias() {
+        let mut settings = qwen(Region::Beijing, "");
+        settings.target_lang = "zh".into();
+        settings.glossary = vec![
+            GlossaryEntry { source: "RadioTerm".into(), aliases: vec![], target: "radio".into(), target_lang: "zh".into() },
+            GlossaryEntry { source: "LoRA".into(), aliases: vec!["RadioTerm".into()], target: "adaptation".into(), target_lang: "zh".into() },
+        ];
+        let phrases = &settings.session_update()["session"]["translation"]["corpus"]["phrases"];
+        assert_eq!(phrases["RadioTerm"], "radio");
     }
 
     #[test]

@@ -16,7 +16,9 @@ function savedEntry(value: unknown): GlossaryEntry | null {
   const target = clean(row.target);
   const targetLang = clean(row.targetLang);
   if (!source || !target || !targetLang || /[\r\n]/.test(source + target + targetLang)) return null;
-  const aliases = Array.isArray(row.aliases) ? row.aliases.map(clean).filter(Boolean) : [];
+  const aliases = Array.isArray(row.aliases)
+    ? row.aliases.map(clean).filter((alias) => alias && alias.toLowerCase() !== source.toLowerCase())
+    : [];
   if (aliases.some((alias) => /[\r\n]/.test(alias))) return null;
   return { source, aliases, target, targetLang };
 }
@@ -24,7 +26,7 @@ function savedEntry(value: unknown): GlossaryEntry | null {
 export function migrateGlossary(saved: { glossary?: unknown; hotwords?: unknown }): GlossaryEntry[] {
   const entries: GlossaryEntry[] = [];
   const add = (entry: GlossaryEntry) => {
-    if (!entries.some((item) => item.targetLang === entry.targetLang && item.source.toLowerCase() === entry.source.toLowerCase())) {
+    if (!entries.some((item) => item.targetLang === entry.targetLang && item.source === entry.source)) {
       entries.push(entry);
     }
   };
@@ -56,10 +58,11 @@ export function upsertGlossary(
   const aliases = Array.isArray(draft.aliases) ? draft.aliases.map(clean).filter(Boolean) : [];
   if (!source || !target) throw new Error("blank");
   if ([source, target, targetLang, ...aliases].some((value) => /[\r\n]/.test(value))) throw new Error("line");
+  if (aliases.some((alias) => alias.toLowerCase() === source.toLowerCase())) throw new Error("ambiguousAlias");
   if (!languageCodes.has(targetLang) && !(targetLang === "*" && index !== undefined && entries[index].targetLang === "*")) {
     throw new Error("language");
   }
-  if (entries.some((entry, at) => at !== index && entry.targetLang === targetLang && entry.source.toLowerCase() === source.toLowerCase())) {
+  if (entries.some((entry, at) => at !== index && entry.targetLang === targetLang && entry.source === source)) {
     throw new Error("duplicate");
   }
   const next = entries.slice();

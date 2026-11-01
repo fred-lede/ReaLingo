@@ -23,12 +23,30 @@ test('add and delete return new arrays without changing unrelated entries', () =
   assert.deepEqual(one, [lora]);
 });
 
-test('duplicate and multiline entries are rejected before persistence', () => {
+test('exact duplicate and multiline entries are rejected before persistence', () => {
   const one = upsertGlossary([], lora, undefined, codes);
-  assert.throws(() => upsertGlossary(one, { ...lora, source: 'lora' }, undefined, codes), /duplicate/i);
+  assert.throws(() => upsertGlossary(one, lora, undefined, codes), /duplicate/i);
+  assert.equal(upsertGlossary(one, { ...lora, source: 'LoRa', aliases: [] }, undefined, codes).length, 2);
   assert.throws(() => upsertGlossary([], { ...lora, target: 'bad\nline' }, undefined, codes), /line/i);
   assert.throws(() => upsertGlossary([], { ...lora, source: ' ' }, undefined, codes), /blank/i);
   assert.throws(() => upsertGlossary([], { ...lora, targetLang: 'xx' }, undefined, codes), /language/i);
+});
+
+test('migration keeps distinct canonical spellings', () => {
+  const entries = migrateGlossary({ glossary: [lora, { ...lora, source: 'LoRa', aliases: [], target: '无线技术' }] });
+  assert.equal(entries.length, 2);
+});
+
+test('case-only aliases are rejected because they can name a different term', () => {
+  assert.throws(
+    () => upsertGlossary([], { ...lora, aliases: ['LoRa'] }, undefined, codes),
+    /ambiguousAlias/,
+  );
+  assert.deepEqual(upsertGlossary([], { ...lora, aliases: ['Low-Ri'] }, undefined, codes)[0].aliases, ['Low-Ri']);
+  assert.deepEqual(
+    migrateGlossary({ glossary: [{ ...lora, aliases: ['LoRa', 'Low-Ri'] }] })[0].aliases,
+    ['Low-Ri'],
+  );
 });
 
 test('a migrated wildcard can be edited but a new wildcard cannot be added', () => {

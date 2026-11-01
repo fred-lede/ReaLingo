@@ -6,6 +6,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { t as msg } from "./i18n";
 import { settings } from "./store";
 import { langName } from "./languages";
+import { emptyLocalDiagnostics, updateLocalDiagnostics } from "./local-diagnostics";
 
 export interface Line {
   id: number;
@@ -35,6 +36,7 @@ export const speaking = ref(false);
 export const fileProgress = ref<{ sent: number; total: number | null } | null>(null);
 /** Raw server frames, newest last — the diagnostics drawer. */
 export const rawLog = ref<unknown[]>([]);
+export const localDiagnostics = ref(emptyLocalDiagnostics());
 
 let nextId = 1;
 
@@ -257,6 +259,7 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
 });
 
 void listen("rt://raw", ({ payload }) => {
+  localDiagnostics.value = updateLocalDiagnostics(localDiagnostics.value, payload);
   rawLog.value.push(payload);
   if (rawLog.value.length > 300) rawLog.value.splice(0, rawLog.value.length - 300);
 });
@@ -271,6 +274,7 @@ export async function start(source: Source, speak: boolean) {
   detectedLang.value = "";
   resetTurns();
   rawLog.value = [];
+  localDiagnostics.value = emptyLocalDiagnostics();
   fileProgress.value = null;
   status.value = "connecting";
   // The id is the file name, so it has to survive as a plain slug — and being an ISO

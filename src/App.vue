@@ -25,6 +25,7 @@ import {
   fileProgress,
   isRunning,
   lines,
+  localDiagnostics,
   rawLog,
   speaking,
   start,
@@ -575,6 +576,16 @@ watch([lines, current], async () => {
         <footer class="dock">
           <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
           <p v-else-if="warnMsg" class="warn">{{ warnMsg }}</p>
+          <div v-if="settings.mode === 'local' && isRunning()" class="local-perf" :title="t('diagHint')">
+            <span class="local-perf-title">{{ t("diagTitle") }}</span>
+            <div class="local-perf-grid">
+              <span>{{ t("diagAudioQueue") }} <b>{{ localDiagnostics.audioQueueMs === null ? "—" : `${(localDiagnostics.audioQueueMs / 1000).toFixed(1)}s` }}</b></span>
+              <span>{{ t("diagAsr") }} <b>{{ localDiagnostics.asrElapsedMs === null ? "—" : `${(localDiagnostics.asrElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+              <span>{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>
+              <span>{{ t("diagTranslation") }} <b>{{ localDiagnostics.translationElapsedMs === null ? "—" : `${(localDiagnostics.translationElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+              <span>{{ t("diagDropped") }} <b>{{ localDiagnostics.droppedChunks }}</b></span>
+            </div>
+          </div>
           <button
             class="go"
             :class="{ running: isRunning() }"
@@ -805,6 +816,12 @@ watch([lines, current], async () => {
 
 /* ---------- dock ---------- */
 .dock { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 4px 0 0; }
+
+.local-perf { padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 10px; color: var(--ink-2); background: var(--shade); }
+.local-perf-title { display: block; margin-bottom: 5px; font-size: 10.5px; font-weight: 700; }
+.local-perf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; font-size: 10.5px; }
+.local-perf-grid span { display: flex; justify-content: space-between; gap: 5px; }
+.local-perf-grid b { color: var(--ink); font-variant-numeric: tabular-nums; }
 
 .go {
   position: relative;

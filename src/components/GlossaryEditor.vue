@@ -37,6 +37,7 @@ const validationKeys: Record<string, Key> = {
   line: "glossaryLine",
   language: "glossaryLanguageError",
   duplicate: "glossaryDuplicate",
+  ambiguousAlias: "glossaryAmbiguousAlias",
 };
 
 function reset() {
@@ -92,7 +93,7 @@ function targetLabel(code: string): string {
       <strong>{{ t("glossaryExampleTitle") }}</strong>
       <dl>
         <dt>{{ t("glossarySource") }}</dt><dd>LoRA</dd>
-        <dt>{{ t("glossaryAliases") }}</dt><dd>LoRa, Loari, Low-Ri</dd>
+        <dt>{{ t("glossaryAliases") }}</dt><dd>Loari, Low-Ri</dd>
         <dt>{{ t("glossaryTarget") }}</dt><dd>LoRA</dd>
         <dt>{{ t("glossaryLanguage") }}</dt><dd>{{ targetLabel("zh") }}</dd>
       </dl>
