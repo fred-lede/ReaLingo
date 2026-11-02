@@ -1,9 +1,13 @@
+export type BackendStatus = "detecting" | "metal" | "cuda" | "cpu" | "unknown";
+
 export interface LocalDiagnostics {
   audioQueueMs: number | null;
   asrElapsedMs: number | null;
   translationQueueMs: number | null;
   translationElapsedMs: number | null;
   droppedChunks: number;
+  asrBackend: BackendStatus;
+  translationBackend: BackendStatus;
 }
 
 export function emptyLocalDiagnostics(): LocalDiagnostics {
@@ -13,6 +17,8 @@ export function emptyLocalDiagnostics(): LocalDiagnostics {
     translationQueueMs: null,
     translationElapsedMs: null,
     droppedChunks: 0,
+    asrBackend: "detecting",
+    translationBackend: "detecting",
   };
 }
 
@@ -21,6 +27,13 @@ export function updateLocalDiagnostics(stats: LocalDiagnostics, payload: unknown
   const event = payload as Record<string, unknown>;
   const valid = (value: unknown): value is number =>
     typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (event.type === "local.backend"
+    && (event.stage === "asr" || event.stage === "translation")
+    && (event.backend === "detecting" || event.backend === "metal" || event.backend === "cuda" || event.backend === "cpu" || event.backend === "unknown")) {
+    return event.stage === "asr"
+      ? { ...stats, asrBackend: event.backend }
+      : { ...stats, translationBackend: event.backend };
+  }
   if (event.type === "local.asr" && valid(event.audioQueueChunks) && valid(event.elapsedMs)) {
     return { ...stats, audioQueueMs: event.audioQueueChunks * 100, asrElapsedMs: event.elapsedMs };
   }

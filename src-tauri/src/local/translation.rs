@@ -6,8 +6,13 @@ use llama_cpp_2::{
     sampling::LlamaSampler,
 };
 use std::{path::Path, sync::OnceLock};
+use super::backend_status::{capture_llama, classify_llama, BackendStatus};
 
 static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
+
+fn cpu_model_params() -> LlamaModelParams {
+    LlamaModelParams::default().with_n_gpu_layers(0).with_devices(&[]).expect("empty GPU device list is valid")
+}
 
 fn translation_user_text(text: &str, context: &str, hints: &[(String, String)], possible: &[(String, String)]) -> String {
     let mut user_text = String::new();
@@ -74,6 +79,8 @@ pub struct LocalTranslator {
     template: llama_cpp_2::model::LlamaChatTemplate,
     qwen3: bool,
     backend: &'static LlamaBackend,
+    candidate_backend: BackendStatus,
+    backend_status: BackendStatus,
 }
 
 impl LocalTranslator {
@@ -87,9 +94,17 @@ impl LocalTranslator {
         let backend = BACKEND.get_or_init(|| LlamaBackend::init().map_err(|e| e.to_string()));
         let backend = backend.as_ref().map_err(Clone::clone)?;
         let gpu_params = LlamaModelParams::default().with_n_gpu_layers(1000);
-        let model = LlamaModel::load_from_file(backend, path, &gpu_params)
-            .or_else(|_| LlamaModel::load_from_file(backend, path, &LlamaModelParams::default()))
-            .map_err(|e| format!("Could not load translation GGUF {}: {e}", path.display()))?;
+        let (gpu_result, gpu_evidence) = capture_llama(|| LlamaModel::load_from_file(backend, path, &gpu_params));
+        let (model, candidate_backend) = match gpu_result {
+            Ok(model) => {
+                let lines: Vec<_> = gpu_evidence.iter().map(String::as_str).collect();
+                (model, classify_llama(&lines, false))
+            }
+            Err(_) => {
+                let (cpu_result, _) = capture_llama(|| LlamaModel::load_from_file(backend, path, &cpu_model_params()));
+                (cpu_result.map_err(|e| format!("Could not load translation GGUF {}: {e}", path.display()))?, BackendStatus::Cpu)
+            }
+        };
         let template = model
             .chat_template(None)
             .map_err(|e| format!("GGUF model has no usable embedded chat template: {e}"))?;
@@ -102,7 +117,13 @@ impl LocalTranslator {
             template,
             qwen3,
             backend,
+            candidate_backend,
+            backend_status: BackendStatus::Detecting,
         })
+    }
+
+    pub fn backend_status(&self) -> BackendStatus {
+        self.backend_status
     }
 
     pub fn translate(
@@ -165,6 +186,7 @@ impl LocalTranslator {
             .model
             .new_context(self.backend, ctx_params)
             .map_err(|e| format!("GGUF context: {e}"))?;
+        self.backend_status = self.candidate_backend;
         let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
         batch
             .add_sequence(&tokens, 0, false)
@@ -264,7 +286,13 @@ fn translate_with_fallback(
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_context_leak, translate_with_fallback, translation_user_text};
+    use super::{cpu_model_params, looks_like_context_leak, translate_with_fallback, translation_user_text};
+
+    #[test]
+    fn cpu_retry_disables_gpu_offload() {
+        assert_eq!(cpu_model_params().n_gpu_layers(), 0);
+        assert!(cpu_model_params().devices().is_empty());
+    }
 
     #[test]
     fn detects_context_repetition_and_english_leaks_in_chinese_output() {

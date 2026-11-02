@@ -3408,6 +3408,7 @@ dependencies = [
  "futures-util",
  "keyring",
  "llama-cpp-2",
+ "llama-cpp-sys-2",
  "objc2",
  "objc2-core-audio",
  "objc2-core-foundation",
@@ -3423,6 +3424,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "whisper-rs",
+ "whisper-rs-sys",
  "windows",
  "windows-core 0.61.2",
 ]

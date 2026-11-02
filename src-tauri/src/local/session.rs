@@ -1,4 +1,5 @@
 use super::{asr::SubtitleSegment, glossary::GlossaryMatcher, LocalModels, LocalTranslator, WhisperEngine};
+use super::backend_status::BackendStatus;
 use crate::{
     config::{Settings, TranslationPace},
     realtime::{self, Event},
@@ -26,6 +27,25 @@ const TIMESTAMP_JITTER_MS: i64 = 1_000;
 const FAST_TRANSLATION_WAIT: Duration = Duration::from_secs(2);
 const COMPLETE_TRANSLATION_WAIT: Duration = Duration::from_secs(4);
 const MAX_GROUP_PARTS: usize = 3;
+
+fn backend_event(stage: &str, backend: BackendStatus) -> serde_json::Value {
+    serde_json::json!({ "type": "local.backend", "stage": stage, "backend": backend })
+}
+
+fn initial_backend_events(asr: BackendStatus, translation: Option<BackendStatus>) -> Vec<serde_json::Value> {
+    [("asr", Some(asr)), ("translation", translation)]
+        .into_iter()
+        .filter_map(|(stage, status)| status.filter(|status| *status != BackendStatus::Detecting).map(|status| backend_event(stage, status)))
+        .collect()
+}
+
+fn report_asr_backend(app: &AppHandle, asr: &WhisperEngine, last_reported: &mut BackendStatus) {
+    let current = asr.backend_status();
+    if current != BackendStatus::Detecting && current != *last_reported {
+        let _ = app.emit(realtime::RAW_EVENT, backend_event("asr", current));
+        *last_reported = current;
+    }
+}
 
 fn hop_for_queue(queue_chunks: usize, live_capture: bool, catching_up: &mut bool) -> usize {
     if !live_capture {
@@ -258,6 +278,10 @@ impl LocalSession {
     ) -> Result<(), String> {
         realtime::note(app, "status", "connecting");
         realtime::note(app, "status", "connected");
+        let translation_backend = if settings.transcribe_only { None } else { models.translator.as_ref().map(LocalTranslator::backend_status) };
+        for event in initial_backend_events(models.asr.backend_status(), translation_backend) {
+            let _ = app.emit(realtime::RAW_EVENT, event);
+        }
         let matcher = GlossaryMatcher::new(&settings.glossary, &settings.target_lang)?;
         let (translation_tx, translation_rx) = std::sync::mpsc::channel();
         let (group_tx, group_rx) = std::sync::mpsc::channel();
@@ -308,6 +332,7 @@ impl LocalSession {
         let mut last_source = String::new();
         let mut catching_up = false;
         let mut hop = HOP;
+        let mut last_reported = asr.backend_status();
         loop {
             let chunk = audio_rx.blocking_recv();
             if let Some(samples) = chunk {
@@ -326,6 +351,7 @@ impl LocalSession {
                         &mut last_source,
                         audio_rx.len(),
                     )?;
+                    report_asr_backend(app, asr, &mut last_reported);
                 }
             } else {
                 break;
@@ -348,6 +374,7 @@ impl LocalSession {
                 &mut last_source,
                 audio_rx.len(),
             )?;
+            report_asr_backend(app, asr, &mut last_reported);
         }
         Ok(())
     }
@@ -545,6 +572,7 @@ impl LocalSession {
         jobs: std::sync::mpsc::Receiver<TranslationJob>,
     ) -> Result<(), String> {
         let mut context = VecDeque::with_capacity(2);
+        let mut last_reported = translator.backend_status();
         for job in jobs {
             let queue_wait_ms = job.queued_at.elapsed().as_millis();
             let context_text = context.iter().map(String::as_str).collect::<Vec<_>>().join("\n");
@@ -552,6 +580,11 @@ impl LocalSession {
                 .filter(|term| !job.hints.contains(term)).collect::<Vec<_>>();
             let started = Instant::now();
             let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh", &job.hints, &possible);
+            let backend = translator.backend_status();
+            if backend != BackendStatus::Detecting && backend != last_reported {
+                let _ = app.emit(realtime::RAW_EVENT, backend_event("translation", backend));
+                last_reported = backend;
+            }
             let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
                 "type": "local.translation",
                 "id": &job.id,
@@ -577,9 +610,21 @@ impl LocalSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{collapse_repeated_asr_segments, committable, hop_for_queue, trim_repeated_prefix, PendingGroup, SpeechSegmenter, SubtitleSegment, HOP, RATE};
+    use super::{backend_event, initial_backend_events, collapse_repeated_asr_segments, committable, hop_for_queue, trim_repeated_prefix, PendingGroup, SpeechSegmenter, SubtitleSegment, HOP, RATE};
     use crate::{config::{GlossaryEntry, TranslationPace}, local::glossary::GlossaryMatcher};
+    use crate::local::backend_status::BackendStatus;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn backend_events_exclude_detecting_and_absent_translation() {
+        assert_eq!(backend_event("asr", BackendStatus::Metal), serde_json::json!({
+            "type": "local.backend", "stage": "asr", "backend": "metal"
+        }));
+        assert!(initial_backend_events(BackendStatus::Detecting, None).is_empty());
+        assert!(initial_backend_events(BackendStatus::Detecting, Some(BackendStatus::Detecting)).is_empty());
+        assert_eq!(initial_backend_events(BackendStatus::Metal, None), vec![backend_event("asr", BackendStatus::Metal)]);
+        assert_eq!(initial_backend_events(BackendStatus::Metal, Some(BackendStatus::Cpu)).len(), 2);
+    }
 
     #[test]
     fn translation_group_keeps_source_fragments_and_translates_one_phrase() {

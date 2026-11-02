@@ -16,6 +16,7 @@ import History from "./components/History.vue";
 import { locale, setLocale, t } from "./i18n";
 import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICES } from "./languages";
 import { check, checkUpdateAtStartup, openHome } from "./update";
+import type { BackendStatus } from "./local-diagnostics";
 import { activeKey, settings, initSettings, resolvedTheme, SUB_SIZE, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
 import {
   current,
@@ -42,6 +43,8 @@ const showAbout = ref(false);
 const showHistory = ref(false);
 const showDiag = ref(false);
 const sourceKind = ref<SourceKind>("mic");
+const backendKeys = { detecting: "backendDetecting", metal: "backendMetal", cuda: "backendCuda", cpu: "backendCpu", unknown: "backendUnknown" } as const;
+const backendLabel = (status: BackendStatus) => backendKeys[status];
 const devices = ref<{ id: string; name: string; loopback: boolean }[]>([]);
 const deviceId = ref("");
 const filePath = ref("");
@@ -588,6 +591,8 @@ watch([lines, current], async () => {
           <div v-if="settings.mode === 'local' && isRunning()" class="local-perf" :title="t('diagHint')">
             <span class="local-perf-title">{{ t("diagTitle") }}</span>
             <div class="local-perf-grid">
+              <span>{{ t("diagAsrBackend") }} <b>{{ t(backendLabel(localDiagnostics.asrBackend)) }}</b></span>
+              <span v-if="!transcribingOnly">{{ t("diagTranslationBackend") }} <b>{{ t(backendLabel(localDiagnostics.translationBackend)) }}</b></span>
               <span>{{ t("diagAudioQueue") }} <b>{{ localDiagnostics.audioQueueMs === null ? "—" : `${(localDiagnostics.audioQueueMs / 1000).toFixed(1)}s` }}</b></span>
               <span>{{ t("diagAsr") }} <b>{{ localDiagnostics.asrElapsedMs === null ? "—" : `${(localDiagnostics.asrElapsedMs / 1000).toFixed(1)}s` }}</b></span>
               <span v-if="!transcribingOnly">{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>

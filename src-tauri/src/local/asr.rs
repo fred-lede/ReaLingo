@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::{path::Path, sync::Mutex};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use super::backend_status::{capture_whisper, classify_whisper, BackendStatus};
 
 #[derive(Debug, Clone)]
 pub struct SubtitleSegment {
@@ -45,7 +46,11 @@ fn suffix_after_cursor(pieces: &[TimedPiece], cursor_ms: i64, ascii: bool) -> Op
     None
 }
 
-pub struct WhisperEngine(WhisperContext);
+pub struct WhisperEngine {
+    context: WhisperContext,
+    forced_cpu: bool,
+    backend: Mutex<BackendStatus>,
+}
 
 impl WhisperEngine {
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -56,12 +61,12 @@ impl WhisperEngine {
         let mut gpu_params = WhisperContextParameters::default();
         gpu_params.use_gpu(true);
         match WhisperContext::new_with_params(model_path.as_ref(), gpu_params) {
-            Ok(context) => Ok(Self(context)),
+            Ok(context) => Ok(Self { context, forced_cpu: false, backend: Mutex::new(BackendStatus::Detecting) }),
             Err(gpu_error) => {
                 let mut cpu_params = WhisperContextParameters::default();
                 cpu_params.use_gpu(false);
                 WhisperContext::new_with_params(model_path.as_ref(), cpu_params)
-                    .map(Self)
+                    .map(|context| Self { context, forced_cpu: true, backend: Mutex::new(BackendStatus::Detecting) })
                     .map_err(|cpu_error| {
                         format!(
                             "Could not load Whisper model {} (GPU: {gpu_error}; CPU: {cpu_error})",
@@ -72,6 +77,10 @@ impl WhisperEngine {
         }
     }
 
+    pub fn backend_status(&self) -> BackendStatus {
+        *self.backend.lock().unwrap()
+    }
+
     pub fn transcribe_samples(
         &self,
         samples: &[f32],
@@ -79,10 +88,10 @@ impl WhisperEngine {
         offset_ms: i64,
         clip_after_ms: Option<i64>,
     ) -> Result<Vec<SubtitleSegment>, String> {
-        let mut state = self
-            .0
-            .create_state()
-            .map_err(|e| format!("Whisper state: {e}"))?;
+        let (state, evidence) = capture_whisper(|| self.context.create_state());
+        let mut state = state.map_err(|e| format!("Whisper state: {e}"))?;
+        let lines: Vec<_> = evidence.iter().map(String::as_str).collect();
+        *self.backend.lock().unwrap() = classify_whisper(&lines, self.forced_cpu);
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(
             std::thread::available_parallelism().map_or(2, |n| n.get().min(8) as i32),
@@ -108,7 +117,7 @@ impl WhisperEngine {
                     let pieces: Vec<_> = (0..segment.n_tokens())
                         .filter_map(|index| {
                             let token = segment.get_token(index)?;
-                            if token.token_id() >= self.0.token_eot() {
+                            if token.token_id() >= self.context.token_eot() {
                                 return None;
                             }
                             Some(TimedPiece {

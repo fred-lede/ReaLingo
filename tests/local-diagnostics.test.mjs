@@ -13,7 +13,20 @@ test('local diagnostics converts queued 100 ms chunks and retains the latest sta
     translationQueueMs: 340,
     translationElapsedMs: 560,
     droppedChunks: 0,
+    asrBackend: 'detecting',
+    translationBackend: 'detecting',
   });
+});
+
+test('backend events update only the named stage and reset for each run', () => {
+  let stats = emptyLocalDiagnostics();
+  stats = updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'asr', backend: 'metal' });
+  stats = updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'translation', backend: 'cpu' });
+  assert.equal(stats.asrBackend, 'metal');
+  assert.equal(stats.translationBackend, 'cpu');
+  assert.deepEqual(updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'asr', backend: 'gpu' }), stats);
+  assert.deepEqual(updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'other', backend: 'cuda' }), stats);
+  assert.equal(emptyLocalDiagnostics().translationBackend, 'detecting');
 });
 
 test('drop count follows cumulative capture total and unrelated events do not change diagnostics', () => {
