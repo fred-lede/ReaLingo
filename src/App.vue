@@ -48,6 +48,9 @@ const backendLabel = (status: BackendStatus) => backendKeys[status];
 const devices = ref<{ id: string; name: string; loopback: boolean }[]>([]);
 const deviceId = ref("");
 const filePath = ref("");
+const recordingState = ref<"idle" | "recording" | "saved" | "error">("idle");
+const recordingFile = ref("");
+const recordingError = ref("");
 const level = ref(0);
 /** What the host OS can do; decides whether the "system audio" tab has real devices. */
 const caps = ref({ os: "", loopback: true });
@@ -79,7 +82,7 @@ const deviceOptions = computed(() =>
   visibleDevices.value.map((d) => ({ value: d.id, label: d.name }))
 );
 const canStart = computed(() =>
-  sourceKind.value === "file" ? !!filePath.value : !!deviceId.value
+  sourceKind.value === "file" ? !!filePath.value : visibleDevices.value.some((device) => device.id === deviceId.value)
 );
 
 const statusKey = computed(() => {
@@ -117,6 +120,21 @@ async function chooseFile() {
   if (typeof picked === "string") filePath.value = picked;
 }
 
+void listen<{ status: string; file?: string; message?: string }>("mic://recording", ({ payload }) => {
+  recordingState.value = payload.status as typeof recordingState.value;
+  recordingFile.value = payload.file ?? recordingFile.value;
+  recordingError.value = payload.message ?? "";
+});
+
+async function openRecordingsDir() {
+  try {
+    const dir = await invoke<string>("recordings_dir");
+    await invoke("plugin:opener|reveal_item_in_dir", { paths: [dir] });
+  } catch (e) {
+    recordingError.value = String(e);
+  }
+}
+
 /* ---------- read aloud ---------- */
 // The note says what the voice sounds like; search matches names and descriptions in both
 // UI languages, so typing "温柔" or "British" narrows the list.
@@ -151,10 +169,13 @@ async function toggle() {
     showSettings.value = true;
     return;
   }
+  recordingState.value = "idle";
+  recordingFile.value = "";
+  recordingError.value = "";
   await start(
     sourceKind.value === "file"
       ? { kind: "file", path: filePath.value }
-      : { kind: "device", id: deviceId.value },
+      : { kind: "device", id: deviceId.value, record: sourceKind.value === "mic" && settings.recordMic },
     settings.mode === "remote" && settings.speak && !speakBlocked.value
   );
 }
@@ -429,6 +450,19 @@ watch([lines, current], async () => {
               <div class="meter" :title="t('level')">
                 <i :style="{ transform: `scaleX(${Math.min(1, level * 1.6)})` }" />
               </div>
+              <template v-if="sourceKind === 'mic'">
+                <label class="line">
+                  <span>{{ t("recordMic") }}</span>
+                  <button class="sw" role="switch" :aria-label="t('recordMic')" :aria-checked="settings.recordMic" :class="{ on: settings.recordMic }" :disabled="isRunning()" @click.prevent="settings.recordMic = !settings.recordMic" />
+                </label>
+                <p class="hint">{{ t("recordMicHint") }}</p>
+                <div class="row recording-row">
+                  <span v-if="recordingState === 'recording'" class="hint">{{ t("recordingNow") }} {{ recordingFile }}</span>
+                  <span v-else-if="recordingState === 'saved'" class="hint">{{ t("recordingSaved") }} {{ recordingFile }}</span>
+                  <button class="chip" @click="openRecordingsDir">{{ t("historyDir") }}</button>
+                </div>
+                <p v-if="recordingError" class="err">{{ t("recordingFailed") }} {{ recordingError }}</p>
+              </template>
               <p v-if="sourceKind === 'system' && !caps.loopback" class="hint notice">
                 {{ caps.os === "macos" ? t("loopbackMacOld") : t("loopbackLinux") }}
               </p>
@@ -746,6 +780,8 @@ watch([lines, current], async () => {
 }
 
 .line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; cursor: pointer; }
+.recording-row { justify-content: space-between; }
+.recording-row .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .pair .line { gap: 6px; }
 .seg.icons > button { display: flex; align-items: center; justify-content: center; }

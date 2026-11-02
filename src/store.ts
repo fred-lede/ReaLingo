@@ -87,6 +87,8 @@ export interface Settings {
   model: string;
   /** Off by default: translations are private, so nothing hits the disk unless asked. */
   history: boolean;
+  /** Save the full microphone input as one WAV file per run. */
+  recordMic: boolean;
   /** Legacy hotwords are migrated into glossary when saved settings load. */
   hotwords: Record<string, string>;
   glossary: GlossaryEntry[];
@@ -117,6 +119,7 @@ export const settings = reactive<Settings>({
   targetLang: "en",
   model: MODEL_QWEN3_5,
   history: false,
+  recordMic: false,
   hotwords: {},
   glossary: [],
   speak: false,

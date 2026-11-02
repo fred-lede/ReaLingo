@@ -5,6 +5,7 @@ mod history;
 #[cfg(any(target_os = "macos", windows))]
 mod local;
 mod player;
+mod recording;
 pub mod realtime;
 pub mod pulse;
 pub mod resample;
@@ -27,6 +28,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Default)]
 pub struct AppState {
     running: Mutex<Option<Arc<AtomicBool>>>,
+    capture: Mutex<Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>>,
     exiting: AtomicBool,
     level: Arc<AtomicU32>,
     #[cfg(any(target_os = "macos", windows))]
@@ -36,7 +38,7 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Source {
-    Device { id: String },
+    Device { id: String, #[serde(default)] record: bool },
     File { path: String },
 }
 
@@ -85,6 +87,13 @@ fn default_device(loopback: bool) -> Option<String> {
 #[tauri::command]
 fn input_level(state: State<AppState>) -> f32 {
     audio::read_level(&state.level)
+}
+
+#[tauri::command]
+fn recordings_dir(app: AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
 }
 
 /// Shown read-only in Settings so it is obvious which host the app will dial.
@@ -153,10 +162,35 @@ async fn start_stream(
     #[cfg(any(target_os = "macos", windows))]
     let live_capture = matches!(&source, Source::Device { .. });
     match source {
-        Source::Device { id } => {
+        Source::Device { id, record } => {
+            let recording_path = if record && id.starts_with("mic|") {
+                let dir = PathBuf::from(recordings_dir(app.clone())?);
+                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?.as_nanos();
+                Some(dir.join(format!("microphone-{stamp}.wav")))
+            } else { None };
+            let recording_name = recording_path.as_ref().and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned());
+            let app_recording = app.clone();
             // Only needed when we make sound ourselves; otherwise the plain loopback path.
-            audio::start(&id, settings.sample_rate(), tx, state.level.clone(), dropped.clone(), stop.clone(), settings.speak)
+            let capture = audio::start(&id, settings.sample_rate(), tx, state.level.clone(), dropped.clone(), stop.clone(), settings.speak, recording_path,
+                move |result| {
+                    let event = match result {
+                        Ok(path) => serde_json::json!({ "status": "saved", "file": path.file_name().unwrap_or_default().to_string_lossy() }),
+                        Err(error) => {
+                            realtime::note(&app_recording, "warn", format!("Microphone recording was not saved: {error}"));
+                            serde_json::json!({ "status": "error", "message": error.to_string() })
+                        }
+                    };
+                    let _ = app_recording.emit("mic://recording", event);
+                })
                 .map_err(|e| e.to_string())?;
+            if let Some(capture) = capture {
+                *state.capture.lock().unwrap() = Some((stop.clone(), capture));
+            }
+            if let Some(file) = recording_name {
+                let _ = app.emit("mic://recording", serde_json::json!({ "status": "recording", "file": file }));
+            }
             let (app2, stop2) = (app.clone(), stop.clone());
             tauri::async_runtime::spawn(async move {
                 let mut reported = 0;
@@ -271,8 +305,19 @@ fn stop_stream(state: State<AppState>) {
 fn halt(state: &State<AppState>) {
     if let Some(stop) = state.running.lock().unwrap().take() {
         stop.store(true, Ordering::Relaxed);
+        join_capture(state, &stop);
     }
     state.level.store(0f32.to_bits(), Ordering::Relaxed);
+}
+
+fn join_capture(state: &AppState, stop: &Arc<AtomicBool>) {
+    let capture = {
+        let mut capture = state.capture.lock().unwrap();
+        if capture.as_ref().is_some_and(|(current, _)| Arc::ptr_eq(current, stop)) {
+            capture.take()
+        } else { None }
+    };
+    if let Some((_, handle)) = capture { let _ = handle.join(); }
 }
 
 pub(crate) fn request_exit(app: &AppHandle) {
@@ -281,6 +326,7 @@ pub(crate) fn request_exit(app: &AppHandle) {
     let stop = state.running.lock().unwrap().clone();
     if let Some(stop) = stop {
         stop.store(true, Ordering::Relaxed);
+        join_capture(&state, &stop);
         state.level.store(0f32.to_bits(), Ordering::Relaxed);
     } else {
         finish_shutdown(app, &state);
@@ -289,6 +335,8 @@ pub(crate) fn request_exit(app: &AppHandle) {
 
 fn finish_session(app: &AppHandle, stop: &Arc<AtomicBool>) {
     let state = app.state::<AppState>();
+    stop.store(true, Ordering::Relaxed);
+    join_capture(&state, stop);
     {
         let mut running = state.running.lock().unwrap();
         if running.as_ref().is_some_and(|current| Arc::ptr_eq(current, stop)) {
@@ -302,6 +350,10 @@ fn finish_session(app: &AppHandle, stop: &Arc<AtomicBool>) {
 }
 
 fn finish_shutdown(app: &AppHandle, state: &AppState) {
+    if let Some((stop, handle)) = state.capture.lock().unwrap().take() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+    }
     #[cfg(any(target_os = "macos", windows))]
     state.local_models.lock().unwrap().clear();
     app.exit(0);
@@ -359,6 +411,7 @@ pub fn run() {
             set_api_key,
             default_device,
             input_level,
+            recordings_dir,
             endpoint_url,
             start_stream,
             stop_stream,

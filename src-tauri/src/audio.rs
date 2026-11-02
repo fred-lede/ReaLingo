@@ -27,6 +27,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
 
 use crate::resample::{chunk_samples, downmix, Resampler};
@@ -151,19 +152,25 @@ pub fn start(
     dropped: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     exclude_self: bool,
-) -> Result<()> {
+    recording_path: Option<PathBuf>,
+    on_recording: impl FnOnce(Result<PathBuf>) + Send + 'static,
+) -> Result<Option<std::thread::JoinHandle<()>>> {
     // Linux system audio never reaches cpal — it is a `parec` pipe, which owns its own
     // thread and reports failure synchronously already.
     #[cfg(target_os = "linux")]
     if let Some(source) = id.strip_prefix(SYS).and_then(|r| r.strip_prefix(SEP)) {
         let _ = dropped;
-        return crate::pulse::start(source, rate, tx, level, stop);
+        let _ = (recording_path, on_recording);
+        crate::pulse::start(source, rate, tx, level, stop)?;
+        return Ok(None);
     }
 
     #[cfg(windows)]
     if exclude_self && is_default_output(id) {
         let pipe = Pipe::new(crate::wasapi::RATE, crate::wasapi::CHANNELS as usize, rate, tx, level, dropped);
-        return crate::wasapi::start(pipe, stop);
+        let _ = (recording_path, on_recording);
+        crate::wasapi::start(pipe, stop)?;
+        return Ok(None);
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = exclude_self;
@@ -171,7 +178,7 @@ pub fn start(
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let id = id.to_string();
 
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         // macOS: system audio always goes through our own tap — cpal 0.17's loopback leaves
         // tap auto-start off and records silence. The tap has to outlive the stream.
         #[cfg(target_os = "macos")]
@@ -190,7 +197,7 @@ pub fn start(
                 return;
             }
         };
-        let stream = match build(&id, rate, tx, level, dropped) {
+        let (stream, finish) = match build(&id, rate, tx, level, dropped, recording_path) {
             Ok(s) => s,
             Err(e) => {
                 let _ = ready_tx.send(Err(e.to_string()));
@@ -198,6 +205,8 @@ pub fn start(
             }
         };
         if let Err(e) = stream.play() {
+            drop(stream);
+            if let Some(finish) = finish { finish.abort(); }
             let _ = ready_tx.send(Err(e.to_string()));
             return;
         }
@@ -206,12 +215,14 @@ pub fn start(
             std::thread::sleep(Duration::from_millis(60));
         }
         drop(stream);
+        if let Some(finish) = finish { on_recording(finish.complete()); }
     });
 
     ready_rx
         .recv_timeout(Duration::from_secs(10))
         .map_err(|_| anyhow!("audio device did not start within 10s"))?
-        .map_err(|e| anyhow!(e))
+        .map_err(|e| anyhow!(e))?;
+    Ok(Some(handle))
 }
 
 /// Whether `id` is the system-audio entry for the default output — the device we play on.
@@ -226,7 +237,7 @@ fn is_default_output(id: &str) -> bool {
         .is_some_and(|d| d.to_string() == target)
 }
 
-fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropped: Arc<AtomicU64>) -> Result<cpal::Stream> {
+fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropped: Arc<AtomicU64>, recording_path: Option<PathBuf>) -> Result<(cpal::Stream, Option<crate::recording::Finish>)> {
     let (device, supported) = find(id)?;
     let sample_format = supported.sample_format();
     let channels = supported.channels() as usize;
@@ -234,15 +245,29 @@ fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropp
     let config: cpal::StreamConfig = supported.into();
 
     let mut pipe = Pipe::new(in_rate, channels, rate, tx, level, dropped);
-    let sink = move |frames: &[f32]| pipe.feed(frames);
+    let (mut recording, finish) = if let Some(path) = recording_path {
+        let (tap, finish) = crate::recording::start(path, in_rate, channels as u16)?;
+        (Some(tap), Some(finish))
+    } else { (None, None) };
+    let sink = move |frames: &[f32]| {
+        if let Some(tap) = &mut recording { tap.feed(frames); }
+        pipe.feed(frames);
+    };
 
-    match sample_format {
+    let stream = match sample_format {
         SampleFormat::F32 => typed::<f32>(&device, &config, sink),
         SampleFormat::I16 => typed::<i16>(&device, &config, sink),
         SampleFormat::U16 => typed::<u16>(&device, &config, sink),
         SampleFormat::I32 => typed::<i32>(&device, &config, sink),
         SampleFormat::I8 => typed::<i8>(&device, &config, sink),
         other => Err(anyhow!("unsupported sample format: {other}")),
+    };
+    match stream {
+        Ok(stream) => Ok((stream, finish)),
+        Err(error) => {
+            if let Some(finish) = finish { finish.abort(); }
+            Err(error)
+        }
     }
 }
 

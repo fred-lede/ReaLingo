@@ -14,6 +14,11 @@ const zh = {
   pickFile: "选择音频文件",
   fileFormats: "支持 mp3 / wav / m4a / flac / ogg",
   level: "输入电平",
+  recordMic: "保存麦克风录音",
+  recordMicHint: "每次开始保存一个完整 WAV 文件；与辨识掉落片段无关。默认关闭。",
+  recordingNow: "正在录音：",
+  recordingSaved: "已保存：",
+  recordingFailed: "录音未保存：",
 
   langTitle: "语言",
   from: "源语言",
@@ -224,6 +229,11 @@ const en: typeof zh = {
   pickFile: "Choose an audio file",
   fileFormats: "mp3 / wav / m4a / flac / ogg",
   level: "Input level",
+  recordMic: "Save microphone recording",
+  recordMicHint: "Save one complete WAV file per run, independent of ASR drops. Off by default.",
+  recordingNow: "Recording:",
+  recordingSaved: "Saved:",
+  recordingFailed: "Recording was not saved:",
 
   langTitle: "Languages",
   from: "Source",
