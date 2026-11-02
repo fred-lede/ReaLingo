@@ -47,7 +47,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": ["resources/ggml-silero-v5.1.2.bin", "resources/SILERO-VAD-LICENSE.txt"],
+    "resources": ["resources/ggml-silero-v5.1.2.bin", "resources/SILERO-VAD-LICENSE.txt", "resources/RUSTY-MP3-LICENSE.txt"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": {
       "minimumSystemVersion": "12.0",

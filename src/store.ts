@@ -58,6 +58,7 @@ export interface SubtitleStyle {
 export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini";
 export type ExecutionMode = "remote" | "local";
 export type TranslationPace = "fast" | "complete";
+export type RecordingFormat = "wav" | "mp3";
 
 /** Where each vendor's key lives. A key belongs to the account, not the protocol. */
 const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
@@ -87,8 +88,9 @@ export interface Settings {
   model: string;
   /** Off by default: translations are private, so nothing hits the disk unless asked. */
   history: boolean;
-  /** Save the full microphone input as one WAV file per run. */
+  /** Save the full microphone input as one file per run. */
   recordMic: boolean;
+  recordFormat: RecordingFormat;
   /** Legacy hotwords are migrated into glossary when saved settings load. */
   hotwords: Record<string, string>;
   glossary: GlossaryEntry[];
@@ -120,6 +122,7 @@ export const settings = reactive<Settings>({
   model: MODEL_QWEN3_5,
   history: false,
   recordMic: false,
+  recordFormat: "wav",
   hotwords: {},
   glossary: [],
   speak: false,
@@ -195,6 +198,7 @@ export async function initSettings(persist = true) {
     delete (settings.sub as { fontSize?: number }).fontSize;
   }
   settings.stream.srcSize = streamSize(settings.stream.srcSize, 13);
+  if (settings.recordFormat !== "mp3") settings.recordFormat = "wav";
   settings.stream.tgtSize = streamSize(settings.stream.tgtSize, 16);
   settings.sub.srcSize = subSize(settings.sub.srcSize, 19);
   settings.sub.tgtSize = subSize(settings.sub.tgtSize, 30);

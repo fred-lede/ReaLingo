@@ -3413,6 +3413,7 @@ dependencies = [
  "objc2-core-audio",
  "objc2-core-foundation",
  "objc2-foundation",
+ "rusty_mp3",
  "serde",
  "serde_json",
  "symphonia",
@@ -3609,6 +3610,12 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty_mp3"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eda7c6c82285d2bc3f1e6aded40ca6f7572fe9eec77f18fb10efc1d03aed3877"
 
 [[package]]
 name = "same-file"

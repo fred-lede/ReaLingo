@@ -128,8 +128,7 @@ void listen<{ status: string; file?: string; message?: string }>("mic://recordin
 
 async function openRecordingsDir() {
   try {
-    const dir = await invoke<string>("recordings_dir");
-    await invoke("plugin:opener|reveal_item_in_dir", { paths: [dir] });
+    await invoke("open_recordings_dir");
   } catch (e) {
     recordingError.value = String(e);
   }
@@ -175,7 +174,7 @@ async function toggle() {
   await start(
     sourceKind.value === "file"
       ? { kind: "file", path: filePath.value }
-      : { kind: "device", id: deviceId.value, record: sourceKind.value === "mic" && settings.recordMic },
+      : { kind: "device", id: deviceId.value, record: sourceKind.value === "mic" && settings.recordMic, format: settings.recordFormat },
     settings.mode === "remote" && settings.speak && !speakBlocked.value
   );
 }
@@ -455,6 +454,13 @@ watch([lines, current], async () => {
                   <span>{{ t("recordMic") }}</span>
                   <button class="sw" role="switch" :aria-label="t('recordMic')" :aria-checked="settings.recordMic" :class="{ on: settings.recordMic }" :disabled="isRunning()" @click.prevent="settings.recordMic = !settings.recordMic" />
                 </label>
+                <div v-if="settings.recordMic">
+                  <span class="mini">{{ t("recordFormat") }}</span>
+                  <div class="seg" role="group" :aria-label="t('recordFormat')">
+                    <button :aria-pressed="settings.recordFormat === 'wav'" :class="{ on: settings.recordFormat === 'wav' }" :disabled="isRunning()" @click="settings.recordFormat = 'wav'">WAV</button>
+                    <button :aria-pressed="settings.recordFormat === 'mp3'" :class="{ on: settings.recordFormat === 'mp3' }" :disabled="isRunning()" @click="settings.recordFormat = 'mp3'">MP3</button>
+                  </div>
+                </div>
                 <p class="hint">{{ t("recordMicHint") }}</p>
                 <div class="row recording-row">
                   <span v-if="recordingState === 'recording'" class="hint">{{ t("recordingNow") }} {{ recordingFile }}</span>

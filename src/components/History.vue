@@ -94,15 +94,8 @@ async function clearAll() {
   await load();
 }
 
-// reveal, not open_path: revealing is what `opener:default` already grants, while opening a
-// path needs its own permission plus a scope entry for a directory whose name is only known
-// at runtime. Same destination, one fewer moving part.
-//
-// The argument is `paths`, and it is a list — passing a single `path` fails the command's
-// deserialisation, and nothing here would have shown you that.
 const openDir = async () => {
-  const dir = await call<string>("history_dir");
-  if (dir) await call("plugin:opener|reveal_item_in_dir", { paths: [dir] });
+  await call("history_open_dir");
 };
 
 async function remove(id: string) {

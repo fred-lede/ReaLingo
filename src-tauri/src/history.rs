@@ -13,6 +13,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 /// The file's first line: what the session was translating, and with what.
 #[derive(Serialize, Deserialize)]
@@ -166,10 +167,10 @@ pub fn history_clear(app: AppHandle) -> Result<(), String> {
     fs::create_dir_all(&d).map_err(|e| e.to_string())
 }
 
-/// For the "open folder" button — the frontend hands it to the opener plugin.
 #[tauri::command]
-pub fn history_dir(app: AppHandle) -> Result<String, String> {
-    Ok(dir(&app)?.to_string_lossy().into_owned())
+pub fn history_open_dir(app: AppHandle) -> Result<(), String> {
+    let path = dir(&app)?;
+    app.opener().open_path(path.to_string_lossy().into_owned(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

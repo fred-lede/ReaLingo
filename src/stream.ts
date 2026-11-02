@@ -283,7 +283,7 @@ void listen("rt://raw", ({ payload }) => {
   if (rawLog.value.length > 300) rawLog.value.splice(0, rawLog.value.length - 300);
 });
 
-export type Source = { kind: "device"; id: string; record?: boolean } | { kind: "file"; path: string };
+export type Source = { kind: "device"; id: string; record?: boolean; format?: "wav" | "mp3" } | { kind: "file"; path: string };
 
 /** `speak` is decided by the caller: whether the setting may take effect for this source. */
 export async function start(source: Source, speak: boolean) {

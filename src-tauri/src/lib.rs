@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Default)]
 pub struct AppState {
@@ -38,8 +39,45 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Source {
-    Device { id: String, #[serde(default)] record: bool },
+    Device { id: String, #[serde(default)] record: bool, #[serde(default)] format: RecordingFormat },
     File { path: String },
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordingFormat {
+    #[default]
+    Wav,
+    Mp3,
+}
+
+impl Source {
+    fn recording_extension(&self) -> Option<&'static str> {
+        match self {
+            Self::Device { id, record: true, format } if id.starts_with("mic|") => Some(match format {
+                RecordingFormat::Wav => "wav",
+                RecordingFormat::Mp3 => "mp3",
+            }),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod recording_source_tests {
+    use super::*;
+
+    #[test]
+    fn old_device_requests_default_to_wav_and_mp3_can_be_selected() {
+        let old: Source = serde_json::from_value(serde_json::json!({
+            "kind": "device", "id": "mic|default", "record": true
+        })).unwrap();
+        let mp3: Source = serde_json::from_value(serde_json::json!({
+            "kind": "device", "id": "mic|default", "record": true, "format": "mp3"
+        })).unwrap();
+        assert_eq!(old.recording_extension(), Some("wav"));
+        assert_eq!(mp3.recording_extension(), Some("mp3"));
+    }
 }
 
 #[tauri::command]
@@ -89,11 +127,16 @@ fn input_level(state: State<AppState>) -> f32 {
     audio::read_level(&state.level)
 }
 
-#[tauri::command]
 fn recordings_dir(app: AppHandle) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn open_recordings_dir(app: AppHandle) -> Result<(), String> {
+    let dir = recordings_dir(app.clone())?;
+    app.opener().open_path(dir, None::<&str>).map_err(|e| e.to_string())
 }
 
 /// Shown read-only in Settings so it is obvious which host the app will dial.
@@ -161,13 +204,14 @@ async fn start_stream(
 
     #[cfg(any(target_os = "macos", windows))]
     let live_capture = matches!(&source, Source::Device { .. });
+    let recording_extension = source.recording_extension();
     match source {
-        Source::Device { id, record } => {
-            let recording_path = if record && id.starts_with("mic|") {
+        Source::Device { id, .. } => {
+            let recording_path = if let Some(extension) = recording_extension {
                 let dir = PathBuf::from(recordings_dir(app.clone())?);
                 let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                     .map_err(|e| e.to_string())?.as_nanos();
-                Some(dir.join(format!("microphone-{stamp}.wav")))
+                Some(dir.join(format!("microphone-{stamp}.{extension}")))
             } else { None };
             let recording_name = recording_path.as_ref().and_then(|path| path.file_name())
                 .map(|name| name.to_string_lossy().into_owned());
@@ -411,7 +455,7 @@ pub fn run() {
             set_api_key,
             default_device,
             input_level,
-            recordings_dir,
+            open_recordings_dir,
             endpoint_url,
             start_stream,
             stop_stream,
@@ -422,7 +466,7 @@ pub fn run() {
             history::history_read,
             history::history_delete,
             history::history_clear,
-            history::history_dir,
+            history::history_open_dir,
             tray::sync_tray
         ])
         .build(tauri::generate_context!())
