@@ -11,12 +11,15 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
 use tokio::sync::mpsc::Receiver;
 
 const RATE: usize = 16_000;
 const HOP: usize = RATE * 2;
 const MAX_PENDING: usize = RATE * 16;
+const PREROLL: usize = RATE / 2;
+const VAD_END_SILENCE_CS: f32 = 60.0;
 // Suppress only a long, nearly silent tail after capture stops (about -50 dBFS).
 const QUIET_FLUSH_RMS_PCM: f64 = 104.0;
 const AUDIBLE_BLOCK_RMS_PCM: f64 = 184.0;
@@ -138,6 +141,60 @@ pub struct TranscriptionWindow {
     pub offset_ms: i64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum VadDecision {
+    Silence,
+    Speaking,
+    SpeechEnded,
+}
+
+struct SileroVad {
+    context: WhisperVadContext,
+    params: WhisperVadParams,
+}
+
+impl SileroVad {
+    fn load(path: &std::path::Path) -> Result<Self, String> {
+        let mut context_params = WhisperVadContextParams::new();
+        context_params.set_n_threads(1);
+        let context = WhisperVadContext::new(&path.to_string_lossy(), context_params)
+            .map_err(|error| format!("Silero VAD model could not be loaded: {error}"))?;
+        let mut params = WhisperVadParams::new();
+        params.set_threshold(0.4);
+        params.set_min_speech_duration(100);
+        params.set_min_silence_duration(400);
+        Ok(Self { context, params })
+    }
+
+    fn classify(&mut self, samples: &[f32]) -> Result<VadDecision, String> {
+        let segments = self.context.segments_from_samples(self.params, samples)
+            .map_err(|error| format!("Silero VAD failed: {error}"))?;
+        let Some(last) = segments.last() else {
+            return Ok(VadDecision::Silence);
+        };
+        let window_cs = samples.len() as f32 * 100.0 / RATE as f32;
+        if window_cs - last.end >= VAD_END_SILENCE_CS {
+            Ok(VadDecision::SpeechEnded)
+        } else {
+            Ok(VadDecision::Speaking)
+        }
+    }
+}
+
+fn vad_decision(vad: &mut Option<SileroVad>, app: &AppHandle, samples: &[f32]) -> VadDecision {
+    let Some(detector) = vad.as_mut() else { return VadDecision::Speaking };
+    match detector.classify(samples) {
+        Ok(decision) => decision,
+        Err(error) => {
+            let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
+                "type": "local.vad", "status": "disabled", "reason": error,
+            }));
+            *vad = None;
+            VadDecision::Speaking
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct SpeechSegmenter {
     pending: Vec<i16>,
@@ -183,6 +240,12 @@ impl SpeechSegmenter {
         self.since_window = 0;
         Some(window)
     }
+    fn retain_preroll(&mut self) {
+        let drain = self.pending.len().saturating_sub(PREROLL);
+        self.pending.drain(..drain);
+        self.consumed += drain;
+        self.since_window = 0;
+    }
     fn window(&self) -> TranscriptionWindow {
         TranscriptionWindow {
             samples: self.pending.iter().map(|s| *s as f32 / 32768.0).collect(),
@@ -194,6 +257,24 @@ impl SpeechSegmenter {
         self.pending.drain(..drain);
         self.consumed += drain;
         self.since_window = 0;
+    }
+}
+
+fn schedule_vad_window(
+    segmenter: &mut SpeechSegmenter,
+    window: TranscriptionWindow,
+    decision: VadDecision,
+) -> Option<(TranscriptionWindow, bool)> {
+    match decision {
+        VadDecision::Silence => {
+            segmenter.retain_preroll();
+            None
+        }
+        VadDecision::SpeechEnded => {
+            segmenter.retain_preroll();
+            Some((window, true))
+        }
+        VadDecision::Speaking => Some((window, false)),
     }
 }
 
@@ -328,6 +409,23 @@ impl LocalSession {
         group_tx: &Sender<GroupMessage>,
     ) -> Result<(), String> {
         let mut segmenter = SpeechSegmenter::default();
+        let vad_result = app.path().resolve("resources/ggml-silero-v5.1.2.bin", BaseDirectory::Resource)
+            .map_err(|error| error.to_string())
+            .and_then(|path| SileroVad::load(&path));
+        let mut vad = match vad_result {
+            Ok(vad) => Some(vad),
+            Err(reason) => {
+                let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
+                    "type": "local.vad", "status": "disabled", "reason": reason,
+                }));
+                None
+            }
+        };
+        if vad.is_some() {
+            let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
+                "type": "local.vad", "status": "enabled", "model": "silero-v5.1.2",
+            }));
+        }
         let mut committed_until_ms = -1i64;
         let mut last_source = String::new();
         let mut catching_up = false;
@@ -338,6 +436,8 @@ impl LocalSession {
             if let Some(samples) = chunk {
                 hop = hop_for_queue(audio_rx.len(), live_capture, &mut catching_up);
                 for window in segmenter.push(&samples, hop) {
+                    let decision = vad_decision(&mut vad, app, &window.samples);
+                    let Some((window, force)) = schedule_vad_window(&mut segmenter, window, decision) else { continue };
                     Self::process_window(
                         app,
                         settings,
@@ -346,7 +446,7 @@ impl LocalSession {
                         group_tx,
                         window,
                         hop,
-                        false,
+                        force,
                         &mut committed_until_ms,
                         &mut last_source,
                         audio_rx.len(),
@@ -361,6 +461,9 @@ impl LocalSession {
             }
         }
         if let Some(window) = segmenter.flush() {
+            if vad_decision(&mut vad, app, &window.samples) == VadDecision::Silence {
+                return Ok(());
+            }
             Self::process_window(
                 app,
                 settings,
@@ -614,6 +717,42 @@ mod tests {
     use crate::{config::{GlossaryEntry, TranslationPace}, local::glossary::GlossaryMatcher};
     use crate::local::backend_status::BackendStatus;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn silent_window_keeps_preroll_without_compressing_timestamps() {
+        let mut segmenter = SpeechSegmenter::default();
+        assert_eq!(segmenter.push(&vec![0; RATE * 2], HOP).len(), 1);
+        segmenter.retain_preroll();
+        let windows = segmenter.push(&vec![1_000; RATE * 2], HOP);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].offset_ms, 1_500);
+        assert_eq!(windows[0].samples.len(), RATE * 5 / 2);
+    }
+
+    #[test]
+    fn bundled_silero_rejects_silence() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/ggml-silero-v5.1.2.bin");
+        let mut vad = super::SileroVad::load(&path).unwrap();
+        assert_eq!(vad.classify(&vec![0.0; RATE * 2]).unwrap(), super::VadDecision::Silence);
+    }
+
+    #[test]
+    fn vad_gate_skips_silence_and_finalizes_the_last_spoken_window() {
+        let mut segmenter = SpeechSegmenter::default();
+        let silent = segmenter.push(&vec![0; RATE * 2], HOP).remove(0);
+        assert!(super::schedule_vad_window(&mut segmenter, silent, super::VadDecision::Silence).is_none());
+        let spoken = segmenter.push(&vec![1_000; RATE * 2], HOP).remove(0);
+        let (window, force) = super::schedule_vad_window(&mut segmenter, spoken, super::VadDecision::Speaking).unwrap();
+        assert_eq!(window.offset_ms, 1_500);
+        assert!(!force);
+        let ending = segmenter.push(&vec![0; RATE * 2], HOP).remove(0);
+        let (window, force) = super::schedule_vad_window(&mut segmenter, ending, super::VadDecision::SpeechEnded).unwrap();
+        assert_eq!(window.offset_ms, 1_500);
+        assert!(force);
+        let next = segmenter.push(&vec![1_000; RATE * 2], HOP).remove(0);
+        assert_eq!(next.offset_ms, 5_500);
+    }
 
     #[test]
     fn backend_events_exclude_detecting_and_absent_translation() {
