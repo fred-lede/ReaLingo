@@ -143,9 +143,11 @@ async fn start_stream(
 
     let stop = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicU64::new(0));
-    // Local ASR can stall briefly on GPU work; keep more capture audio in flight there.
-    // Sustained processing slower than realtime still reports dropped audio.
-    let queue_chunks = if settings.mode == ExecutionMode::Local { 256 } else { 64 };
+    // Live local capture needs headroom for GPU stalls; file decoding blocks when its
+    // smaller queue fills instead of reading far ahead of ASR.
+    let queue_chunks = if settings.mode == ExecutionMode::Local {
+        if matches!(&source, Source::File { .. }) { 32 } else { 256 }
+    } else { 64 };
     let (tx, rx) = tokio::sync::mpsc::channel::<Vec<i16>>(queue_chunks);
 
     #[cfg(any(target_os = "macos", windows))]
