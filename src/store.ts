@@ -67,6 +67,7 @@ const KEY_SLOTS = ["qwen35", "openai", "gemini"] as const;
 
 export interface Settings {
   mode: ExecutionMode;
+  transcribeOnly: boolean;
   translationPace: TranslationPace;
   whisperModelPath: string;
   translationModelPath: string;
@@ -99,6 +100,7 @@ export interface Settings {
 
 export const settings = reactive<Settings>({
   mode: "remote",
+  transcribeOnly: false,
   translationPace: "fast",
   whisperModelPath: "",
   translationModelPath: "",

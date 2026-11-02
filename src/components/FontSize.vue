@@ -5,7 +5,7 @@ import { t } from "../i18n";
 import { STREAM_SIZE } from "../store";
 
 /** The two rows of the translation stream, sized independently. */
-const props = defineProps<{ src: number; tgt: number }>();
+const props = defineProps<{ src: number; tgt: number; sourceOnly?: boolean }>();
 const emit = defineEmits<{ "update:src": [number]; "update:tgt": [number] }>();
 
 const open = ref(false);
@@ -94,7 +94,7 @@ const SIZE_PROPS = { min: STREAM_SIZE.min, max: STREAM_SIZE.max, step: 1 } as co
           <span class="fs-label">{{ t("streamSrc") }}</span>
           <Slider v-bind="SIZE_PROPS" :model-value="props.src" unit="px" @update:model-value="emit('update:src', $event)" />
         </div>
-        <div class="fs-row">
+        <div v-if="!props.sourceOnly" class="fs-row">
           <span class="fs-label">{{ t("streamTgt") }}</span>
           <Slider v-bind="SIZE_PROPS" :model-value="props.tgt" unit="px" @update:model-value="emit('update:tgt', $event)" />
         </div>

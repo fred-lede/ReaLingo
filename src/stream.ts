@@ -229,9 +229,12 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
       if (e.lang) detectedLang.value = e.lang;
       speaking.value = !e.done;
       if (e.done) t.sourceDone = true;
-      // Only ever patches here: a turn still waiting for its translation belongs in the
-      // live row, not as a second, half-empty row in the stream.
-      if (t.lineId !== undefined) publish(t);
+      // Transcription-only turns have no target event, so publish and settle on source.
+      // Translation turns still wait for their target before adding a stream row.
+      if (settings.mode === "local" && settings.transcribeOnly) {
+        publish(t);
+        if (e.done) t.targetDone = true;
+      } else if (t.lineId !== undefined) publish(t);
       syncCurrent();
       settle(t);
       break;
@@ -301,8 +304,10 @@ export async function start(source: Source, speak: boolean) {
       v: 1,
       at: Date.now(),
       source: settings.sourceLang,
-      target: settings.targetLang,
-      model: settings.mode === "local" ? settings.translationModelPath.split(/[\\/]/).pop() || "Local" : settings.model,
+      target: settings.mode === "local" && settings.transcribeOnly ? "" : settings.targetLang,
+      model: settings.mode === "local"
+        ? (settings.transcribeOnly ? settings.whisperModelPath : settings.translationModelPath).split(/[\\/]/).pop() || "Local"
+        : settings.model,
       kind: source.kind,
     },
   });
@@ -328,7 +333,7 @@ export const isRunning = () =>
   status.value === "connecting" || status.value === "connected" || status.value === "stopping";
 
 export function exportTxt(rows: Line[] = lines.value): string {
-  return rows.map((l) => (l.source ? `${l.source}\n${l.target}` : l.target)).join("\n\n");
+  return rows.map((l) => [l.source, l.target].filter(Boolean).join("\n")).join("\n\n");
 }
 
 /** SRT timings are derived from arrival time — good enough to follow along, not frame-accurate. */
@@ -338,7 +343,7 @@ export function exportSrt(rows: Line[] = lines.value): string {
     .map((l, i) => {
       const start = l.at - t0;
       const end = (rows[i + 1]?.at ?? l.at + 3000) - t0;
-      const body = l.source ? `${l.source}\n${l.target}` : l.target;
+      const body = [l.source, l.target].filter(Boolean).join("\n");
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${body}\n`;
     })
     .join("\n");

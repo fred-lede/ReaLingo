@@ -162,7 +162,7 @@ async function subtitleWindow() {
 }
 
 async function pushOverlayStyle() {
-  await emitTo("subtitle", "sub://style", JSON.parse(JSON.stringify(settings.sub)));
+  await emitTo("subtitle", "sub://style", { ...JSON.parse(JSON.stringify(settings.sub)), transcribeOnly: settings.mode === "local" && settings.transcribeOnly });
 }
 
 async function showOverlay(show: boolean) {
@@ -194,14 +194,16 @@ async function setOverlayClickThrough(locked: boolean) {
 void listen<Partial<SubtitleStyle>>("sub://patch", ({ payload }) => Object.assign(settings.sub, payload));
 
 watch(() => settings.sub, pushOverlayStyle, { deep: true });
+watch(() => [settings.mode, settings.transcribeOnly], pushOverlayStyle);
 watch(() => settings.sub.show, showOverlay);
 watch(() => settings.sub.locked, setOverlayClickThrough);
 
 /* ---------- model / languages ---------- */
 const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) => l.code) : languageCodes(settings.protocol, settings.model));
+const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
 /** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
 const modelLabel = computed(() => settings.mode === "local"
-  ? settings.translationModelPath.split(/[\\/]/).pop() || t("modeLocal")
+  ? (transcribingOnly.value ? settings.whisperModelPath : settings.translationModelPath).split(/[\\/]/).pop() || t("modeLocal")
   : modelName(settings.protocol, settings.model));
 
 /** The picker matches on both UI languages, so a zh user can still type "japanese". */
@@ -256,16 +258,16 @@ async function syncTray() {
     menuState: {
       tooltip: `ReaLingo · ${t(statusKey.value)}`,
       showLabel: t("trayShow"),
-      runLabel: isRunning() ? t("stop") : t("start"),
+      runLabel: isRunning() ? t("stop") : t(transcribingOnly.value ? "startTranscription" : "start"),
       overlayLabel: t("subShow"),
       overlayOn: settings.sub.show,
       clickThroughLabel: t("subLockShort"),
       clickThroughOn: settings.sub.locked,
       modeLabel: t("subMode"),
-      modes: subModes.map(([value, key]) => ({
+      modes: (transcribingOnly.value ? subModes.filter(([value]) => value === "source") : subModes).map(([value, key]) => ({
         id: value,
         label: t(key),
-        on: settings.sub.mode === value,
+        on: transcribingOnly.value || settings.sub.mode === value,
       })),
       quitLabel: t("trayQuit"),
     },
@@ -281,10 +283,10 @@ void listen<string>("tray://action", ({ payload: id }) => {
 
 // Deliberately not watching `speaking`: it flips on every VAD tick and rebuilding a native
 // menu that often is the same churn that broke focus for the overlay.
-watch([locale, status, () => settings.sub], syncTray, { deep: true });
+watch([locale, status, () => settings.sub, transcribingOnly], syncTray, { deep: true });
 
 /* ---------- export ---------- */
-const exportAs = (kind: "txt" | "srt") => saveAs(kind, lines.value);
+const exportAs = (kind: "txt" | "srt") => saveAs(kind, lines.value, transcribingOnly.value ? "transcription" : "translation");
 
 /* ---------- lifecycle ---------- */
 let levelTimer: number | undefined;
@@ -454,6 +456,7 @@ watch([lines, current], async () => {
                 <Picker v-model="settings.sourceLang" :options="sourceLangOptions" :disabled="isRunning()" />
               </div>
               <button
+                v-if="!transcribingOnly"
                 class="btn-icon swap"
                 :aria-label="t('swap')"
                 :disabled="settings.sourceLang === 'auto' || isRunning()"
@@ -463,13 +466,19 @@ watch([lines, current], async () => {
                   <path d="M4 2.5v10M4 12.5L1.8 10.3M4 12.5l2.2-2.2M11 12.5v-10M11 2.5L8.8 4.7M11 2.5l2.2 2.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
               </button>
-              <div class="col grow">
+              <div v-if="!transcribingOnly" class="col grow">
                 <span class="mini">{{ t("to") }}</span>
                 <Picker v-model="settings.targetLang" :options="langOptions" :disabled="isRunning()" />
               </div>
             </div>
 
-            <label class="line">
+            <label v-if="settings.mode === 'local'" class="line">
+              <span>{{ t("transcribeOnly") }}</span>
+              <button class="sw" :class="{ on: settings.transcribeOnly }" :disabled="isRunning()" @click="settings.transcribeOnly = !settings.transcribeOnly" />
+            </label>
+            <p v-if="transcribingOnly" class="hint">{{ t("transcribeOnlyHint") }}</p>
+
+            <label v-if="!transcribingOnly" class="line">
               <span>{{ t("speak") }}</span>
               <button
                 class="sw"
@@ -478,8 +487,8 @@ watch([lines, current], async () => {
                 @click="settings.speak = !settings.speak"
               />
             </label>
-            <p v-if="speakBlocked && (settings.speak || settings.mode === 'local')" class="hint">{{ t(speakBlocked) }}</p>
-            <template v-else-if="settings.speak">
+            <p v-if="!transcribingOnly && speakBlocked && (settings.speak || settings.mode === 'local')" class="hint">{{ t(speakBlocked) }}</p>
+            <template v-else-if="!transcribingOnly && settings.speak">
               <!-- OpenAI and Gemini pick their own voice; there is nothing to choose. -->
               <p v-if="PROTOCOLS[settings.protocol].serverVoice" class="hint">{{ t("voiceServer") }}</p>
               <div v-else class="line">
@@ -500,7 +509,7 @@ watch([lines, current], async () => {
             <!-- Styling a window that is not on screen is guesswork; the controls follow it. -->
             <template v-if="settings.sub.show">
 
-            <div class="seg">
+            <div v-if="!transcribingOnly" class="seg">
               <button
                 v-for="[value, key] in subModes"
                 :key="value"
@@ -520,7 +529,7 @@ watch([lines, current], async () => {
               <span>{{ t("subSrcSize") }}</span>
               <Slider v-model="settings.sub.srcSize" v-bind="SUB_SLIDER" unit="px" />
             </div>
-            <div class="line">
+            <div v-if="!transcribingOnly" class="line">
               <span>{{ t("subTgtSize") }}</span>
               <Slider v-model="settings.sub.tgtSize" v-bind="SUB_SLIDER" unit="px" />
             </div>
@@ -528,7 +537,7 @@ watch([lines, current], async () => {
             <div class="line">
               <span>{{ t("subColors") }}</span>
               <div class="row">
-                <input v-model="settings.sub.color" type="color" :title="t('subColor')" />
+                <input v-if="!transcribingOnly" v-model="settings.sub.color" type="color" :title="t('subColor')" />
                 <input v-model="settings.sub.srcColor" type="color" :title="t('subSrcColor')" />
               </div>
             </div>
@@ -581,8 +590,8 @@ watch([lines, current], async () => {
             <div class="local-perf-grid">
               <span>{{ t("diagAudioQueue") }} <b>{{ localDiagnostics.audioQueueMs === null ? "—" : `${(localDiagnostics.audioQueueMs / 1000).toFixed(1)}s` }}</b></span>
               <span>{{ t("diagAsr") }} <b>{{ localDiagnostics.asrElapsedMs === null ? "—" : `${(localDiagnostics.asrElapsedMs / 1000).toFixed(1)}s` }}</b></span>
-              <span>{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>
-              <span>{{ t("diagTranslation") }} <b>{{ localDiagnostics.translationElapsedMs === null ? "—" : `${(localDiagnostics.translationElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+              <span v-if="!transcribingOnly">{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>
+              <span v-if="!transcribingOnly">{{ t("diagTranslation") }} <b>{{ localDiagnostics.translationElapsedMs === null ? "—" : `${(localDiagnostics.translationElapsedMs / 1000).toFixed(1)}s` }}</b></span>
               <span>{{ t("diagDropped") }} <b>{{ localDiagnostics.droppedChunks }}</b></span>
             </div>
           </div>
@@ -595,13 +604,13 @@ watch([lines, current], async () => {
             <span class="go-ring" />
             <svg v-if="!isRunning()" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.6v10.8L13 8z" /></svg>
             <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="3.5" width="9" height="9" rx="2" /></svg>
-            {{ status === "stopping" ? t("statusStopping") : isRunning() ? t("stop") : t("start") }}
+            {{ status === "stopping" ? t("statusStopping") : isRunning() ? t("stop") : t(transcribingOnly ? "startTranscription" : "start") }}
           </button>
         </footer>
       </aside>
 
       <!-- translation stream -->
-      <Card class="stream-card" :title="t('streamTitle')" flush>
+      <Card class="stream-card" :title="t(transcribingOnly ? 'transcriptionStreamTitle' : 'streamTitle')" flush>
         <template #action>
           <div class="row">
             <button
@@ -611,7 +620,7 @@ watch([lines, current], async () => {
               :aria-label="t('historyRec')"
               @click="settings.history = !settings.history"
             />
-            <FontSize v-model:src="settings.stream.srcSize" v-model:tgt="settings.stream.tgtSize" />
+            <FontSize v-model:src="settings.stream.srcSize" v-model:tgt="settings.stream.tgtSize" :source-only="transcribingOnly" />
             <button class="chip" @click="showHistory = true">{{ t("history") }}</button>
             <button class="chip" :disabled="!lines.length && !rawLog.length" @click="lines = []; rawLog = []">{{ t("clear") }}</button>
             <button class="chip" :disabled="!lines.length" @click="exportAs('txt')">{{ t("exportTxt") }}</button>
@@ -626,11 +635,11 @@ watch([lines, current], async () => {
           class="stream"
           :style="{ '--src-fs': `${settings.stream.srcSize}px`, '--tgt-fs': `${settings.stream.tgtSize}px` }"
         >
-          <p v-if="!lines.length && !current.target && !current.source" class="empty">{{ t("streamEmpty") }}</p>
+          <p v-if="!lines.length && !current.target && !current.source" class="empty">{{ t(transcribingOnly ? "transcriptionStreamEmpty" : "streamEmpty") }}</p>
 
           <article v-for="l in lines" :key="l.id" class="line-item">
             <p v-if="l.source" class="src">{{ l.source }}</p>
-            <p class="tgt">{{ l.target }}</p>
+            <p v-if="l.target" class="tgt">{{ l.target }}</p>
           </article>
 
           <article
@@ -640,7 +649,7 @@ watch([lines, current], async () => {
             <p v-if="current.source || current.sourceStash" class="src">
               {{ current.source }}<span class="stash">{{ current.sourceStash }}</span>
             </p>
-            <p class="tgt">
+            <p v-if="!transcribingOnly || current.target || current.targetStash" class="tgt">
               {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />
             </p>
           </article>

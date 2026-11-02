@@ -10,23 +10,23 @@ use translation::LocalTranslator;
 
 pub struct LocalModels {
     pub asr: WhisperEngine,
-    pub translator: LocalTranslator,
+    pub translator: Option<LocalTranslator>,
 }
 
 #[derive(Default)]
 pub struct LocalModelCache {
-    paths: Option<(PathBuf, PathBuf)>,
+    paths: Option<(PathBuf, Option<PathBuf>)>,
     models: Option<LocalModels>,
 }
 
 impl LocalModelCache {
-    pub fn load_for(&mut self, whisper_path: &Path, translation_path: &Path) -> Result<(), String> {
-        let paths = (whisper_path.to_path_buf(), translation_path.to_path_buf());
+    pub fn load_for(&mut self, whisper_path: &Path, translation_path: Option<&Path>) -> Result<(), String> {
+        let paths = (whisper_path.to_path_buf(), translation_path.map(Path::to_path_buf));
         if self.paths.as_ref() == Some(&paths) {
             return Ok(());
         }
         let asr = WhisperEngine::load(whisper_path)?;
-        let translator = LocalTranslator::load(translation_path)?;
+        let translator = translation_path.map(LocalTranslator::load).transpose()?;
         self.models = Some(LocalModels { asr, translator });
         self.paths = Some(paths);
         Ok(())
@@ -46,9 +46,25 @@ impl LocalModelCache {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::LocalTranslator;
+    use super::{LocalModelCache, LocalTranslator};
     use std::path::Path;
     use std::process::Command;
+
+    #[test]
+    #[ignore = "requires a local Whisper model"]
+    fn transcription_only_loads_whisper_without_a_translation_file() {
+        crate::configure_metal_backend();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let whisper = repo.join("models/whisper/ggml-small.en-q8_0.bin");
+        let mut cache = LocalModelCache::default();
+        cache.load_for(&whisper, None).unwrap();
+        assert!(cache.models_mut().translator.is_none());
+        let missing = repo.join("models/translation/missing.gguf");
+        assert!(cache.load_for(&whisper, Some(&missing)).unwrap_err().contains("Translation GGUF file not found"));
+        let qwen = repo.join("models/translation/Qwen3-4B-Q4_K_M.gguf");
+        cache.load_for(&whisper, Some(&qwen)).unwrap();
+        assert!(cache.models_mut().translator.is_some());
+    }
 
     #[test]
     #[ignore = "requires the local Qwen GGUF model"]

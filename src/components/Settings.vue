@@ -134,7 +134,7 @@ const advancedOpen = !!settings.url;
       <div class="field">
         <span class="label">{{ t("executionMode") }}</span>
         <Picker v-model="modePick" :options="modeOptions" :disabled="isRunning()" />
-        <small v-if="settings.mode === 'local'">{{ t("localHint") }}</small>
+        <small v-if="settings.mode === 'local'">{{ t(settings.transcribeOnly ? "transcribeOnlyHint" : "localHint") }}</small>
         <small v-else-if="!localAllowed">{{ t("localUnsupported") }}</small>
       </div>
 
@@ -144,12 +144,12 @@ const advancedOpen = !!settings.url;
           <code class="endpoint">{{ settings.whisperModelPath || t("modelNotSelected") }}</code>
           <button class="link" :disabled="isRunning()" @click="chooseModel('whisper')">{{ t("chooseModel") }}</button>
         </div>
-        <div class="field">
+        <div v-if="!settings.transcribeOnly" class="field">
           <span class="label">{{ t("translationModel") }}</span>
           <code class="endpoint">{{ settings.translationModelPath || t("modelNotSelected") }}</code>
           <button class="link" :disabled="isRunning()" @click="chooseModel('translation')">{{ t("chooseModel") }}</button>
         </div>
-        <div class="field">
+        <div v-if="!settings.transcribeOnly" class="field">
           <span class="label">{{ t("translationPace") }}</span>
           <Picker v-model="pacePick" :options="paceOptions" :disabled="isRunning()" />
           <small>{{ t("paceHint") }}</small>

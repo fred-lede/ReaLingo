@@ -359,9 +359,11 @@ conversational two-way interpreting is actually needed.
 
 ## Local models
 
-ReaLingo can use either cloud services or local models. The first local release targets Metal on Apple Silicon macOS and NVIDIA CUDA on Windows, with CPU fallback on both. Select your own Whisper `whisper-rs` compatible `.bin` model and a translation GGUF containing an embedded chat template. ReaLingo does not download models and never sends audio to a cloud service when local inference fails. Suggested acceptance models are Whisper large-v3-turbo and Qwen3-4B Q4_K_M.
+ReaLingo can use either cloud services or local models. The first local release targets Metal on Apple Silicon macOS and NVIDIA CUDA on Windows, with CPU fallback on both. Select your own Whisper `whisper-rs` compatible `.bin` model; translation also requires a GGUF with an embedded chat template. ReaLingo does not download models and never sends audio to a cloud service when local inference fails. Suggested acceptance models are Whisper large-v3-turbo and Qwen3-4B Q4_K_M.
 
 Local mode keeps the full language list; translation quality depends on the selected model. The first release outputs subtitles only. The speech preference is retained for future local text-to-speech support. Linux continues to support existing cloud modes; local inference is not supported there.
+
+The Transcription only switch appears on the main screen in local mode. It loads only Whisper, needs no GGUF, and skips translation. Source text appears in the main window, subtitle overlay, history, and TXT/SRT exports. Turning it off restores translation with the previously selected target language and model path. The overlay's existing Source only option changes display only; it does not stop translation.
 
 Local translation groups up to three adjacent short source fragments. A sentence ending flushes immediately. The Translation pace setting defaults to Immediate, which sends an incomplete group when the next ASR window begins. Prefer complete phrases can combine fragments across ASR windows, waiting up to about four seconds for an incomplete group. Source fragments appear as they are recognized and remain on separate lines in the finished subtitle group. History keeps each fragment's ASR start and end time; exports show the fragments with one shared translation. Model inference time is additional.
 

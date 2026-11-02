@@ -68,6 +68,7 @@ function when(s: SessionRow): string {
 
 function pair(s: SessionRow): string {
   if (!s.meta) return "";
+  if (!s.meta.target) return `${langName(s.meta.source, locale.value)} · ${t("transcribeOnly")}`;
   return `${langName(s.meta.source, locale.value)} → ${langName(s.meta.target, locale.value)}`;
 }
 
@@ -161,7 +162,7 @@ async function remove(id: string) {
           <p v-if="!shown.length" class="blank">{{ t("historyPick") }}</p>
           <article v-for="l in shown" :key="l.id">
             <p v-if="l.source" class="src">{{ l.source }}</p>
-            <p class="tgt">{{ l.target }}</p>
+            <p v-if="l.target" class="tgt">{{ l.target }}</p>
           </article>
         </div>
       </div>

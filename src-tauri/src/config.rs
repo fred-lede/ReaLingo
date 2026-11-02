@@ -93,6 +93,8 @@ pub struct Settings {
     #[serde(default)]
     pub mode: ExecutionMode,
     #[serde(default)]
+    pub transcribe_only: bool,
+    #[serde(default)]
     pub translation_pace: TranslationPace,
     #[serde(default)]
     pub protocol: Protocol,
@@ -437,10 +439,21 @@ mod tests {
         assert_eq!(complete.translation_pace, TranslationPace::Complete);
     }
 
+    #[test]
+    fn transcription_only_defaults_off_and_accepts_saved_toggle() {
+        let old: Settings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!old.transcribe_only);
+        let enabled: Settings = serde_json::from_value(serde_json::json!({
+            "transcribeOnly": true
+        })).unwrap();
+        assert!(enabled.transcribe_only);
+    }
+
     /// Qwen3.5 settings with a key for every vendor, so each test only changes what it is about.
     fn qwen(region: Region, workspace_id: &str) -> Settings {
         Settings {
             mode: ExecutionMode::Remote,
+            transcribe_only: false,
             translation_pace: TranslationPace::Fast,
             protocol: Protocol::Qwen35,
             api_key: "k".into(),

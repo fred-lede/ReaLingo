@@ -339,9 +339,11 @@ GIF 只有 256 色，渐变字会断层，且 1-bit 透明会在深色底上留�
 
 ## 本地模型模式
 
-ReaLingo 可選擇雲端服務或本地模型。首版本地模式在 Apple Silicon macOS 使用 Metal，在 Windows 使用 NVIDIA CUDA，兩者都可回退 CPU。請自行選擇 Whisper `whisper-rs` 相容 `.bin` 模型，以及含內嵌 chat template 的 GGUF 翻譯模型；ReaLingo 不會下載模型，也不會在本地模型失敗時改送雲端。建議驗收模型為 Whisper large-v3-turbo 與 Qwen3-4B Q4_K_M。
+ReaLingo 可選擇雲端服務或本地模型。首版本地模式在 Apple Silicon macOS 使用 Metal，在 Windows 使用 NVIDIA CUDA，兩者都可回退 CPU。請自行選擇 Whisper `whisper-rs` 相容 `.bin` 模型；翻譯時另需含內嵌 chat template 的 GGUF 模型。ReaLingo 不會下載模型，也不會在本地模型失敗時改送雲端。建議驗收模型為 Whisper large-v3-turbo 與 Qwen3-4B Q4_K_M。
 
 本地模式保留完整語言清單，模型實際翻譯能力可能因語言而異。首版只輸出字幕；朗讀偏好會保留，待本地語音合成功能加入後再啟用。Linux 目前仍支援既有雲端模式，本地推論不支援。
+
+主畫面「僅轉錄」開關只在本地模式顯示。開啟後只載入 Whisper，不需要 GGUF，也不執行翻譯；原文會出現在主視窗、字幕窗、歷史記錄與 TXT/SRT 匯出中。關閉後恢復翻譯，原本的目標語言與模型路徑會保留。字幕窗既有的「僅原文」只是顯示方式，不會停止翻譯。
 
 本地翻譯會把相鄰的短原文片段合成最多三段的翻譯單位；遇到句末標點會立即送譯。設定頁的「翻譯節奏」預設為「即時」，在下一批 ASR 開始時送出未完句；選「完整句優先」時可跨批合併，未完句最多等待約四秒。原文會即時逐段顯示，完成後在同一字幕組中保留各段換行；歷史記錄保留每段的 ASR 起迄時間，匯出則顯示這些原文與一段共用譯文。模型翻譯時間另計。
 

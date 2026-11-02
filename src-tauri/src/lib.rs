@@ -117,9 +117,9 @@ async fn start_stream(
     if settings.mode == ExecutionMode::Local {
         let models = state.local_models.clone();
         let whisper_path = PathBuf::from(&settings.whisper_model_path);
-        let translation_path = PathBuf::from(&settings.translation_model_path);
+        let translation_path = (!settings.transcribe_only).then(|| PathBuf::from(&settings.translation_model_path));
         tauri::async_runtime::spawn_blocking(move || {
-            models.lock().unwrap().load_for(&whisper_path, &translation_path)
+            models.lock().unwrap().load_for(&whisper_path, translation_path.as_deref())
         })
         .await
         .map_err(|e| e.to_string())??;

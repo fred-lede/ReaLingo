@@ -29,6 +29,7 @@ const zh = {
   search: "搜索…",
 
   start: "开始翻译",
+  startTranscription: "开始转录",
   stop: "停止",
   statusIdle: "待机",
   statusConnecting: "连接中…",
@@ -72,7 +73,9 @@ const zh = {
   subLocked: "已锁定 · 在主窗解锁",
 
   streamTitle: "翻译流",
+  transcriptionStreamTitle: "转录流",
   streamEmpty: "点击「开始翻译」，译文会实时出现在这里",
+  transcriptionStreamEmpty: "点击「开始转录」，原文会实时出现在这里",
   streamFont: "字号",
   streamSrc: "原文",
   streamTgt: "译文",
@@ -129,6 +132,8 @@ const zh = {
   modeLocal: "本地模型",
   whisperModel: "Whisper 模型",
   translationModel: "翻译模型",
+  transcribeOnly: "仅转录",
+  transcribeOnlyHint: "本地语音转文字，不加载翻译模型；原文会显示在主窗口和字幕窗。",
   translationPace: "翻译节奏",
   paceFast: "即时",
   paceComplete: "完整句优先",
@@ -227,6 +232,7 @@ const en: typeof zh = {
   search: "Search…",
 
   start: "Start",
+  startTranscription: "Start transcription",
   stop: "Stop",
   statusIdle: "Idle",
   statusConnecting: "Connecting…",
@@ -270,7 +276,9 @@ const en: typeof zh = {
   subLocked: "Locked · unlock in main window",
 
   streamTitle: "Translation stream",
+  transcriptionStreamTitle: "Transcription stream",
   streamEmpty: "Hit Start — translations will stream in here",
+  transcriptionStreamEmpty: "Hit Start transcription — source text will appear here live",
   streamFont: "Font size",
   streamSrc: "Source",
   streamTgt: "Translation",
@@ -327,6 +335,8 @@ const en: typeof zh = {
   modeLocal: "Local models",
   whisperModel: "Whisper model",
   translationModel: "Translation model",
+  transcribeOnly: "Transcription only",
+  transcribeOnlyHint: "Local speech to text without loading the translation model. Source text appears in the main window and overlay.",
   translationPace: "Translation pace",
   paceFast: "Immediate",
   paceComplete: "Prefer complete phrases",

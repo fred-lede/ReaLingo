@@ -264,12 +264,17 @@ impl LocalSession {
         let (asr, translator) = (&models.asr, &mut models.translator);
         std::thread::scope(|scope| {
             let translation_matcher = &matcher;
-            let translation = scope.spawn(move || {
-                Self::translate_loop(app, settings, target_language_name, translator, translation_matcher, translation_rx)
-            });
-            let group_translation_tx = translation_tx.clone();
+            let translation = if settings.transcribe_only {
+                None
+            } else {
+                let translator = translator.as_mut().ok_or("Translation model not loaded")?;
+                Some(scope.spawn(move || {
+                    Self::translate_loop(app, settings, target_language_name, translator, translation_matcher, translation_rx)
+                }))
+            };
+            let group_translation_tx = translation.as_ref().map(|_| translation_tx.clone());
             let groups = scope.spawn(move || {
-                Self::group_loop(app, settings.translation_pace, &settings.source_lang, group_rx, &group_translation_tx)
+                Self::group_loop(app, settings.translation_pace, settings.transcribe_only, &settings.source_lang, group_rx, group_translation_tx.as_ref())
             });
             let asr_result = Self::run_asr(app, settings, live_capture, &mut audio_rx, stop, asr, &matcher, &group_tx);
             drop(group_tx);
@@ -277,10 +282,10 @@ impl LocalSession {
                 .join()
                 .map_err(|_| "Translation grouping worker panicked".to_string())?;
             drop(translation_tx);
-            let translation_result = translation
-                .join()
-                .map_err(|_| "Translation worker panicked".to_string())?;
-            translation_result?;
+            if let Some(translation) = translation {
+                translation.join()
+                    .map_err(|_| "Translation worker panicked".to_string())??;
+            }
             group_result?;
             asr_result
         })?;
@@ -350,9 +355,10 @@ impl LocalSession {
     fn group_loop(
         app: &AppHandle,
         pace: TranslationPace,
+        transcribe_only: bool,
         source_lang: &str,
         messages: GroupReceiver<GroupMessage>,
-        translation_tx: &Sender<TranslationJob>,
+        translation_tx: Option<&Sender<TranslationJob>>,
     ) -> Result<(), String> {
         let mut pending_group: Option<PendingGroup> = None;
         let mut turn = 0u64;
@@ -400,7 +406,7 @@ impl LocalSession {
                         done: false,
                         ..Default::default()
                     });
-                    if group.ready(Instant::now(), pace) {
+                    if transcribe_only || group.ready(Instant::now(), pace) {
                         Self::flush_group(app, translation_tx, &mut pending_group)?;
                     }
                 }
@@ -413,7 +419,7 @@ impl LocalSession {
 
     fn flush_group(
         app: &AppHandle,
-        translation_tx: &Sender<TranslationJob>,
+        translation_tx: Option<&Sender<TranslationJob>>,
         pending: &mut Option<PendingGroup>,
     ) -> Result<(), String> {
         let Some(group) = pending.take() else { return Ok(()) };
@@ -424,21 +430,24 @@ impl LocalSession {
             done: true,
             ..Default::default()
         });
-        let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
-            "type": "local.translation_group",
-            "id": &group.id,
-            "parts": group.parts.len(),
-            "startMs": group.parts.first().map(|part| part.start_ms),
-            "endMs": group.parts.last().map(|part| part.end_ms),
-            "waitMs": group.started.elapsed().as_millis(),
-        }));
-        let text = group.translation_text();
-        translation_tx.send(TranslationJob {
-            id: group.id,
-            text,
-            hints: group.hints,
-            queued_at: Instant::now(),
-        }).map_err(|_| "Translation worker stopped".to_string())
+        if let Some(translation_tx) = translation_tx {
+            let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
+                "type": "local.translation_group",
+                "id": &group.id,
+                "parts": group.parts.len(),
+                "startMs": group.parts.first().map(|part| part.start_ms),
+                "endMs": group.parts.last().map(|part| part.end_ms),
+                "waitMs": group.started.elapsed().as_millis(),
+            }));
+            let text = group.translation_text();
+            translation_tx.send(TranslationJob {
+                id: group.id,
+                text,
+                hints: group.hints,
+                queued_at: Instant::now(),
+            }).map_err(|_| "Translation worker stopped".to_string())?;
+        }
+        Ok(())
     }
 
     fn process_window(

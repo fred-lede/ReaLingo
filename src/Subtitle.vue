@@ -15,6 +15,7 @@ import { current, lines } from "./stream";
 import { t } from "./i18n";
 
 const style = ref<SubtitleStyle>(settings.sub);
+const transcribingOnly = ref(false);
 const barEl = ref<HTMLElement | null>(null);
 
 onMounted(async () => {
@@ -23,6 +24,7 @@ onMounted(async () => {
   // Read-only mirror: the main window owns persistence, this one just follows it.
   await initSettings(false);
   style.value = settings.sub;
+  transcribingOnly.value = settings.mode === "local" && settings.transcribeOnly;
   await restoreRect();
   const w = getCurrentWindow();
   void w.onMoved(saveRect);
@@ -129,8 +131,9 @@ function tail() {
   });
 }
 
-void listen<SubtitleStyle>("sub://style", ({ payload }) => {
+void listen<SubtitleStyle & { transcribeOnly?: boolean }>("sub://style", ({ payload }) => {
   style.value = payload;
+  transcribingOnly.value = !!payload.transcribeOnly;
 });
 
 /**
@@ -153,10 +156,12 @@ async function openMenu() {
 
   const menu = await Menu.new({
     items: await Promise.all([
-      pick(t("subBoth"), "mode", "both"),
-      pick(t("subTarget"), "mode", "target"),
-      pick(t("subSource"), "mode", "source"),
-      sep(),
+      ...(transcribingOnly.value ? [] : [
+        pick(t("subBoth"), "mode", "both"),
+        pick(t("subTarget"), "mode", "target"),
+        pick(t("subSource"), "mode", "source"),
+        sep(),
+      ]),
       pick(t("alignLeft"), "align", "left"),
       pick(t("alignCenter"), "align", "center"),
       pick(t("alignRight"), "align", "right"),
@@ -188,8 +193,8 @@ watch(
   () => nextTick(tail)
 );
 
-const showSource = computed(() => style.value.mode !== "target" && !!(src.value || srcStash.value));
-const showTarget = computed(() => style.value.mode !== "source" && !!(tgt.value || tgtStash.value));
+const showSource = computed(() => (transcribingOnly.value || style.value.mode !== "target") && !!(src.value || srcStash.value));
+const showTarget = computed(() => !transcribingOnly.value && style.value.mode !== "source" && !!(tgt.value || tgtStash.value));
 const empty = computed(() => !showSource.value && !showTarget.value);
 // At 0% the plate must vanish completely — a backdrop blur with no tint is still a
 // visible frosted rectangle over video, which defeats the point of the slider.
