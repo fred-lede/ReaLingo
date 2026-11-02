@@ -69,6 +69,14 @@ pub enum ExecutionMode {
     Local,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranslationPace {
+    #[default]
+    Fast,
+    Complete,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GlossaryEntry {
@@ -84,6 +92,8 @@ pub struct GlossaryEntry {
 pub struct Settings {
     #[serde(default)]
     pub mode: ExecutionMode,
+    #[serde(default)]
+    pub translation_pace: TranslationPace,
     #[serde(default)]
     pub protocol: Protocol,
     /// The Model Studio key, shared by both Qwen protocols; named before OpenAI was added.
@@ -417,10 +427,21 @@ impl Settings {
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_translation_pace_defaults_to_fast_and_accepts_complete_sentences() {
+        let old: Settings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old.translation_pace, TranslationPace::Fast);
+        let complete: Settings = serde_json::from_value(serde_json::json!({
+            "translationPace": "complete"
+        })).unwrap();
+        assert_eq!(complete.translation_pace, TranslationPace::Complete);
+    }
+
     /// Qwen3.5 settings with a key for every vendor, so each test only changes what it is about.
     fn qwen(region: Region, workspace_id: &str) -> Settings {
         Settings {
             mode: ExecutionMode::Remote,
+            translation_pace: TranslationPace::Fast,
             protocol: Protocol::Qwen35,
             api_key: "k".into(),
             openai_key: "o".into(),

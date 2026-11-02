@@ -1,10 +1,10 @@
 use super::{asr::SubtitleSegment, glossary::GlossaryMatcher, LocalModels, LocalTranslator, WhisperEngine};
 use crate::{
-    config::Settings,
+    config::{Settings, TranslationPace},
     realtime::{self, Event},
 };
 use std::collections::VecDeque;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver as GroupReceiver, RecvTimeoutError, Sender};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -23,7 +23,8 @@ const CATCH_UP_START_CHUNKS: usize = 20;
 const CATCH_UP_END_CHUNKS: usize = 5;
 // Whisper can move a segment's start backward between overlapping windows.
 const TIMESTAMP_JITTER_MS: i64 = 1_000;
-const MAX_TRANSLATION_WAIT: Duration = Duration::from_secs(2);
+const FAST_TRANSLATION_WAIT: Duration = Duration::from_secs(2);
+const COMPLETE_TRANSLATION_WAIT: Duration = Duration::from_secs(4);
 const MAX_GROUP_PARTS: usize = 3;
 
 fn hop_for_queue(queue_chunks: usize, live_capture: bool, catching_up: &mut bool) -> usize {
@@ -185,6 +186,11 @@ struct TranslationJob {
     queued_at: Instant,
 }
 
+enum GroupMessage {
+    WindowStart,
+    Segment(SubtitleSegment, Vec<(String, String)>),
+}
+
 struct PendingGroup {
     id: String,
     input: String,
@@ -216,16 +222,27 @@ impl PendingGroup {
         self.parts.iter().map(|part| part.text.as_str()).collect::<Vec<_>>().join(" ")
     }
 
-    fn expired(&self, now: Instant) -> bool {
-        now.duration_since(self.started) >= MAX_TRANSLATION_WAIT
+    fn deadline(&self, pace: TranslationPace) -> Instant {
+        self.started + match pace {
+            TranslationPace::Fast => FAST_TRANSLATION_WAIT,
+            TranslationPace::Complete => COMPLETE_TRANSLATION_WAIT,
+        }
     }
 
-    fn ready(&self, now: Instant) -> bool {
+    fn expired(&self, now: Instant, pace: TranslationPace) -> bool {
+        now >= self.deadline(pace)
+    }
+
+    fn flush_on_window(&self, pace: TranslationPace) -> bool {
+        pace == TranslationPace::Fast
+    }
+
+    fn ready(&self, now: Instant, pace: TranslationPace) -> bool {
         self.parts.len() >= MAX_GROUP_PARTS
             || self.parts.last().is_some_and(|part| {
                 part.text.trim_end().ends_with(['.', '?', '!', '。', '？', '！'])
             })
-            || self.expired(now)
+            || self.expired(now, pace)
     }
 }
 
@@ -243,18 +260,28 @@ impl LocalSession {
         realtime::note(app, "status", "connected");
         let matcher = GlossaryMatcher::new(&settings.glossary, &settings.target_lang)?;
         let (translation_tx, translation_rx) = std::sync::mpsc::channel();
+        let (group_tx, group_rx) = std::sync::mpsc::channel();
         let (asr, translator) = (&models.asr, &mut models.translator);
         std::thread::scope(|scope| {
             let translation_matcher = &matcher;
             let translation = scope.spawn(move || {
                 Self::translate_loop(app, settings, target_language_name, translator, translation_matcher, translation_rx)
             });
-            let asr_result = Self::run_asr(app, settings, live_capture, &mut audio_rx, stop, asr, &matcher, &translation_tx);
+            let group_translation_tx = translation_tx.clone();
+            let groups = scope.spawn(move || {
+                Self::group_loop(app, settings.translation_pace, &settings.source_lang, group_rx, &group_translation_tx)
+            });
+            let asr_result = Self::run_asr(app, settings, live_capture, &mut audio_rx, stop, asr, &matcher, &group_tx);
+            drop(group_tx);
+            let group_result = groups
+                .join()
+                .map_err(|_| "Translation grouping worker panicked".to_string())?;
             drop(translation_tx);
             let translation_result = translation
                 .join()
                 .map_err(|_| "Translation worker panicked".to_string())?;
             translation_result?;
+            group_result?;
             asr_result
         })?;
         realtime::note(app, "status", "closed");
@@ -269,56 +296,31 @@ impl LocalSession {
         stop: &Arc<AtomicBool>,
         asr: &WhisperEngine,
         matcher: &GlossaryMatcher,
-        translation_tx: &Sender<TranslationJob>,
+        group_tx: &Sender<GroupMessage>,
     ) -> Result<(), String> {
         let mut segmenter = SpeechSegmenter::default();
         let mut committed_until_ms = -1i64;
         let mut last_source = String::new();
-        let mut turn = 0u64;
-        let mut pending_group: Option<PendingGroup> = None;
         let mut catching_up = false;
         let mut hop = HOP;
         loop {
-            let chunk = if pending_group.is_some() {
-                match audio_rx.try_recv() {
-                    Ok(samples) => Some(samples),
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        if pending_group.as_ref().is_some_and(|group| group.expired(Instant::now())) {
-                            Self::flush_group(app, translation_tx, &mut pending_group)?;
-                        } else {
-                            std::thread::sleep(Duration::from_millis(25));
-                        }
-                        continue;
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => None,
-                }
-            } else {
-                audio_rx.blocking_recv()
-            };
+            let chunk = audio_rx.blocking_recv();
             if let Some(samples) = chunk {
                 hop = hop_for_queue(audio_rx.len(), live_capture, &mut catching_up);
                 for window in segmenter.push(&samples, hop) {
-                    if pending_group.is_some() {
-                        Self::flush_group(app, translation_tx, &mut pending_group)?;
-                    }
                     Self::process_window(
                         app,
                         settings,
                         asr,
                         matcher,
-                        translation_tx,
+                        group_tx,
                         window,
                         hop,
                         false,
                         &mut committed_until_ms,
                         &mut last_source,
-                        &mut turn,
-                        &mut pending_group,
                         audio_rx.len(),
                     )?;
-                }
-                if pending_group.as_ref().is_some_and(|group| group.expired(Instant::now())) {
-                    Self::flush_group(app, translation_tx, &mut pending_group)?;
                 }
             } else {
                 break;
@@ -328,27 +330,85 @@ impl LocalSession {
             }
         }
         if let Some(window) = segmenter.flush() {
-            if pending_group.is_some() {
-                Self::flush_group(app, translation_tx, &mut pending_group)?;
-            }
             Self::process_window(
                 app,
                 settings,
                 asr,
                 matcher,
-                translation_tx,
+                group_tx,
                 window,
                 hop,
                 true,
                 &mut committed_until_ms,
                 &mut last_source,
-                &mut turn,
-                &mut pending_group,
                 audio_rx.len(),
             )?;
         }
-        Self::flush_group(app, translation_tx, &mut pending_group)?;
         Ok(())
+    }
+
+    fn group_loop(
+        app: &AppHandle,
+        pace: TranslationPace,
+        source_lang: &str,
+        messages: GroupReceiver<GroupMessage>,
+        translation_tx: &Sender<TranslationJob>,
+    ) -> Result<(), String> {
+        let mut pending_group: Option<PendingGroup> = None;
+        let mut turn = 0u64;
+        loop {
+            if pending_group.as_ref().is_some_and(|group| group.expired(Instant::now(), pace)) {
+                Self::flush_group(app, translation_tx, &mut pending_group)?;
+            }
+            let message = if let Some(group) = &pending_group {
+                let remaining = group.deadline(pace).saturating_duration_since(Instant::now());
+                messages.recv_timeout(remaining)
+            } else {
+                messages.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            };
+            match message {
+                Ok(GroupMessage::WindowStart) => {
+                    if pending_group.as_ref().is_some_and(|group| group.flush_on_window(pace)) {
+                        Self::flush_group(app, translation_tx, &mut pending_group)?;
+                    }
+                }
+                Ok(GroupMessage::Segment(part, hints)) => {
+                    if pending_group.as_ref().is_some_and(|group| group.expired(Instant::now(), pace)) {
+                        Self::flush_group(app, translation_tx, &mut pending_group)?;
+                    }
+                    if pending_group.is_none() {
+                        turn += 1;
+                        let id = format!("local-{turn}");
+                        let group = PendingGroup::new(id.clone(), Instant::now());
+                        realtime::emit(app, Event {
+                            kind: "link", text: group.input.clone(), id, done: true,
+                            ..Default::default()
+                        });
+                        pending_group = Some(group);
+                    }
+                    let group = pending_group.as_mut().unwrap();
+                    let start_ms = part.start_ms;
+                    let end_ms = part.end_ms;
+                    group.push(part, hints);
+                    realtime::emit(app, Event {
+                        kind: "source",
+                        text: group.display_text(),
+                        lang: if source_lang == "auto" { String::new() } else { source_lang.to_owned() },
+                        id: group.input.clone(),
+                        start_ms: Some(start_ms),
+                        end_ms: Some(end_ms),
+                        done: false,
+                        ..Default::default()
+                    });
+                    if group.ready(Instant::now(), pace) {
+                        Self::flush_group(app, translation_tx, &mut pending_group)?;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => Self::flush_group(app, translation_tx, &mut pending_group)?,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Self::flush_group(app, translation_tx, &mut pending_group)
     }
 
     fn flush_group(
@@ -386,16 +446,15 @@ impl LocalSession {
         settings: &Settings,
         asr: &WhisperEngine,
         matcher: &GlossaryMatcher,
-        translation_tx: &Sender<TranslationJob>,
+        group_tx: &Sender<GroupMessage>,
         window: TranscriptionWindow,
         hop: usize,
         force: bool,
         committed_until_ms: &mut i64,
         last_source: &mut String,
-        turn: &mut u64,
-        pending_group: &mut Option<PendingGroup>,
         audio_queue_len: usize,
     ) -> Result<(), String> {
+        group_tx.send(GroupMessage::WindowStart).map_err(|_| "Translation grouping worker stopped".to_string())?;
         let lang = (settings.source_lang != "auto").then_some(settings.source_lang.as_str());
         let started = Instant::now();
         let clip_after_ms = (*committed_until_ms >= 0).then_some(*committed_until_ms);
@@ -443,46 +502,11 @@ impl LocalSession {
             *last_source = raw_text.clone();
             committed_segments += 1;
             let matched = matcher.apply(raw_text.trim());
-            if pending_group.as_ref().is_some_and(|group| group.expired(Instant::now())) {
-                Self::flush_group(app, translation_tx, pending_group)?;
-            }
-            if pending_group.is_none() {
-                *turn += 1;
-                let id = format!("local-{turn}");
-                let group = PendingGroup::new(id.clone(), Instant::now());
-                realtime::emit(app, Event {
-                    kind: "link",
-                    text: group.input.clone(),
-                    id,
-                    done: true,
-                    ..Default::default()
-                });
-                *pending_group = Some(group);
-            }
-            let group = pending_group.as_mut().unwrap();
-            let start_ms = segment.start_ms;
-            let end_ms = segment.end_ms;
-            group.push(
-                SubtitleSegment { start_ms, end_ms, text: matched.text },
-                matched.hints,
-            );
-            realtime::emit(app, Event {
-                kind: "source",
-                text: group.display_text(),
-                lang: if settings.source_lang == "auto" {
-                    String::new()
-                } else {
-                    settings.source_lang.clone()
-                },
-                id: group.input.clone(),
-                start_ms: Some(start_ms),
-                end_ms: Some(end_ms),
-                done: false,
-                ..Default::default()
-            });
-            if group.ready(Instant::now()) {
-                Self::flush_group(app, translation_tx, pending_group)?;
-            }
+            group_tx.send(GroupMessage::Segment(SubtitleSegment {
+                start_ms: segment.start_ms,
+                end_ms: segment.end_ms,
+                text: matched.text,
+            }, matched.hints)).map_err(|_| "Translation grouping worker stopped".to_string())?;
         }
         let _ = app.emit(realtime::RAW_EVENT, serde_json::json!({
             "type": "local.asr",
@@ -545,7 +569,7 @@ impl LocalSession {
 #[cfg(test)]
 mod tests {
     use super::{collapse_repeated_asr_segments, committable, hop_for_queue, trim_repeated_prefix, PendingGroup, SpeechSegmenter, SubtitleSegment, HOP, RATE};
-    use crate::{config::GlossaryEntry, local::glossary::GlossaryMatcher};
+    use crate::{config::{GlossaryEntry, TranslationPace}, local::glossary::GlossaryMatcher};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -570,7 +594,7 @@ mod tests {
         assert_eq!(group.translation_text(), "so that's where I went to school for MIT for bachelors, masters and PhD");
         assert_eq!(group.parts[1].start_ms, 1_000);
         assert_eq!(group.hints, vec![("MIT".into(), "麻省理工學院".into())]);
-        assert!(group.ready(now));
+        assert!(group.ready(now, TranslationPace::Fast));
     }
 
     #[test]
@@ -578,10 +602,21 @@ mod tests {
         let now = Instant::now();
         let mut group = PendingGroup::new("local-1".into(), now);
         group.push(SubtitleSegment { start_ms: 0, end_ms: 1_000, text: "for MIT".into() }, Vec::new());
-        assert!(!group.ready(now + Duration::from_millis(1_999)));
-        assert!(group.ready(now + Duration::from_secs(2)));
+        assert!(!group.ready(now + Duration::from_millis(1_999), TranslationPace::Fast));
+        assert!(group.ready(now + Duration::from_secs(2), TranslationPace::Fast));
         group.push(SubtitleSegment { start_ms: 1_000, end_ms: 2_000, text: "for a PhD.".into() }, Vec::new());
-        assert!(group.ready(now));
+        assert!(group.ready(now, TranslationPace::Fast));
+    }
+
+    #[test]
+    fn complete_pace_keeps_an_unfinished_group_across_a_window_until_four_seconds() {
+        let now = Instant::now();
+        let mut group = PendingGroup::new("local-1".into(), now);
+        group.push(SubtitleSegment { start_ms: 0, end_ms: 1_000, text: "And many of".into() }, Vec::new());
+        assert!(group.flush_on_window(TranslationPace::Fast));
+        assert!(!group.flush_on_window(TranslationPace::Complete));
+        assert!(!group.ready(now + Duration::from_secs(3), TranslationPace::Complete));
+        assert!(group.ready(now + Duration::from_secs(4), TranslationPace::Complete));
     }
 
     #[test]

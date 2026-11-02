@@ -2,7 +2,7 @@
 import { computed, ref, watch, toRaw, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region } from "../store";
+import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region, type TranslationPace } from "../store";
 import { isRunning } from "../stream";
 import { PRESETS, PROTOCOLS } from "../languages";
 import { t } from "../i18n";
@@ -27,6 +27,11 @@ const modeOptions = computed(() => [
   ...(localAllowed.value ? [{ value: "local", label: t("modeLocal") }] : []),
 ]);
 const modePick = computed({ get: () => settings.mode, set: (value: string) => { if (value !== "local" || localAllowed.value) settings.mode = value as "remote" | "local"; } });
+const paceOptions = computed(() => [
+  { value: "fast", label: t("paceFast") },
+  { value: "complete", label: t("paceComplete") },
+]);
+const pacePick = computed({ get: () => settings.translationPace, set: (value: string) => { settings.translationPace = value as TranslationPace; } });
 async function chooseModel(kind: "whisper" | "translation") {
   const path = await openDialog({ multiple: false, directory: false, filters: [{ name: kind === "whisper" ? "Whisper model" : "GGUF model", extensions: [kind === "whisper" ? "bin" : "gguf"] }] });
   if (typeof path === "string") settings[kind === "whisper" ? "whisperModelPath" : "translationModelPath"] = path;
@@ -143,6 +148,11 @@ const advancedOpen = !!settings.url;
           <span class="label">{{ t("translationModel") }}</span>
           <code class="endpoint">{{ settings.translationModelPath || t("modelNotSelected") }}</code>
           <button class="link" :disabled="isRunning()" @click="chooseModel('translation')">{{ t("chooseModel") }}</button>
+        </div>
+        <div class="field">
+          <span class="label">{{ t("translationPace") }}</span>
+          <Picker v-model="pacePick" :options="paceOptions" :disabled="isRunning()" />
+          <small>{{ t("paceHint") }}</small>
         </div>
       </template>
 

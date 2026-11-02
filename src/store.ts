@@ -57,6 +57,7 @@ export interface SubtitleStyle {
  */
 export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini";
 export type ExecutionMode = "remote" | "local";
+export type TranslationPace = "fast" | "complete";
 
 /** Where each vendor's key lives. A key belongs to the account, not the protocol. */
 const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
@@ -66,6 +67,7 @@ const KEY_SLOTS = ["qwen35", "openai", "gemini"] as const;
 
 export interface Settings {
   mode: ExecutionMode;
+  translationPace: TranslationPace;
   whisperModelPath: string;
   translationModelPath: string;
   protocol: Protocol;
@@ -97,6 +99,7 @@ export interface Settings {
 
 export const settings = reactive<Settings>({
   mode: "remote",
+  translationPace: "fast",
   whisperModelPath: "",
   translationModelPath: "",
   protocol: "qwen35",
