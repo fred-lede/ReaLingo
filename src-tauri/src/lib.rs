@@ -54,7 +54,8 @@ pub enum RecordingFormat {
 impl Source {
     fn recording_extension(&self) -> Option<&'static str> {
         match self {
-            Self::Device { id, record: true, format } if id.starts_with("mic|") => Some(match format {
+            Self::Device { id, record: true, format }
+                if id.starts_with("mic|") || (cfg!(any(target_os = "macos", windows)) && id.starts_with("sys|")) => Some(match format {
                 RecordingFormat::Wav => "wav",
                 RecordingFormat::Mp3 => "mp3",
             }),
@@ -77,6 +78,18 @@ mod recording_source_tests {
         })).unwrap();
         assert_eq!(old.recording_extension(), Some("wav"));
         assert_eq!(mp3.recording_extension(), Some("mp3"));
+    }
+
+    #[test]
+    fn system_audio_can_be_recorded_only_when_enabled() {
+        let system: Source = serde_json::from_value(serde_json::json!({
+            "kind": "device", "id": "sys|default", "record": true, "format": "mp3"
+        })).unwrap();
+        let disabled: Source = serde_json::from_value(serde_json::json!({
+            "kind": "device", "id": "sys|default", "record": false, "format": "mp3"
+        })).unwrap();
+        assert_eq!(system.recording_extension(), cfg!(any(target_os = "macos", windows)).then_some("mp3"));
+        assert_eq!(disabled.recording_extension(), None);
     }
 }
 
@@ -211,7 +224,8 @@ async fn start_stream(
                 let dir = PathBuf::from(recordings_dir(app.clone())?);
                 let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                     .map_err(|e| e.to_string())?.as_nanos();
-                Some(dir.join(format!("microphone-{stamp}.{extension}")))
+                let prefix = if id.starts_with("sys|") { "system" } else { "microphone" };
+                Some(dir.join(format!("{prefix}-{stamp}.{extension}")))
             } else { None };
             let recording_name = recording_path.as_ref().and_then(|path| path.file_name())
                 .map(|name| name.to_string_lossy().into_owned());
@@ -222,18 +236,18 @@ async fn start_stream(
                     let event = match result {
                         Ok(path) => serde_json::json!({ "status": "saved", "file": path.file_name().unwrap_or_default().to_string_lossy() }),
                         Err(error) => {
-                            realtime::note(&app_recording, "warn", format!("Microphone recording was not saved: {error}"));
+                            realtime::note(&app_recording, "warn", format!("Audio recording was not saved: {error}"));
                             serde_json::json!({ "status": "error", "message": error.to_string() })
                         }
                     };
-                    let _ = app_recording.emit("mic://recording", event);
+                    let _ = app_recording.emit("audio://recording", event);
                 })
                 .map_err(|e| e.to_string())?;
             if let Some(capture) = capture {
                 *state.capture.lock().unwrap() = Some((stop.clone(), capture));
             }
             if let Some(file) = recording_name {
-                let _ = app.emit("mic://recording", serde_json::json!({ "status": "recording", "file": file }));
+                let _ = app.emit("audio://recording", serde_json::json!({ "status": "recording", "file": file }));
             }
             let (app2, stop2) = (app.clone(), stop.clone());
             tauri::async_runtime::spawn(async move {

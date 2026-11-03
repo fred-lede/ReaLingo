@@ -74,6 +74,15 @@ const AUDIO_EXT = ["mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "oga"];
 // Where loopback is unavailable (Linux), the "system audio" tab still lists ordinary inputs:
 // the user routes our recording stream to a monitor source outside the app.
 const wantLoopback = computed(() => sourceKind.value === "system" && caps.value.loopback);
+const recordableSource = computed(() => sourceKind.value === "mic" ||
+  (sourceKind.value === "system" && caps.value.loopback && (caps.value.os === "macos" || caps.value.os === "windows")));
+const recordEnabled = computed({
+  get: () => sourceKind.value === "mic" ? settings.recordMic : settings.recordSystem,
+  set: (enabled: boolean) => {
+    if (sourceKind.value === "mic") settings.recordMic = enabled;
+    else settings.recordSystem = enabled;
+  },
+});
 const visibleDevices = computed(() =>
   devices.value.filter((d) => d.loopback === wantLoopback.value)
 );
@@ -120,7 +129,7 @@ async function chooseFile() {
   if (typeof picked === "string") filePath.value = picked;
 }
 
-void listen<{ status: string; file?: string; message?: string }>("mic://recording", ({ payload }) => {
+void listen<{ status: string; file?: string; message?: string }>("audio://recording", ({ payload }) => {
   recordingState.value = payload.status as typeof recordingState.value;
   recordingFile.value = payload.file ?? recordingFile.value;
   recordingError.value = payload.message ?? "";
@@ -174,7 +183,7 @@ async function toggle() {
   await start(
     sourceKind.value === "file"
       ? { kind: "file", path: filePath.value }
-      : { kind: "device", id: deviceId.value, record: sourceKind.value === "mic" && settings.recordMic, format: settings.recordFormat },
+      : { kind: "device", id: deviceId.value, record: recordableSource.value && recordEnabled.value, format: settings.recordFormat },
     settings.mode === "remote" && settings.speak && !speakBlocked.value
   );
 }
@@ -449,19 +458,19 @@ watch([lines, current], async () => {
               <div class="meter" :title="t('level')">
                 <i :style="{ transform: `scaleX(${Math.min(1, level * 1.6)})` }" />
               </div>
-              <template v-if="sourceKind === 'mic'">
+              <template v-if="recordableSource">
                 <label class="line">
-                  <span>{{ t("recordMic") }}</span>
-                  <button class="sw" role="switch" :aria-label="t('recordMic')" :aria-checked="settings.recordMic" :class="{ on: settings.recordMic }" :disabled="isRunning()" @click.prevent="settings.recordMic = !settings.recordMic" />
+                  <span>{{ t(sourceKind === 'mic' ? "recordMic" : "recordSystem") }}</span>
+                  <button class="sw" role="switch" :aria-label="t(sourceKind === 'mic' ? 'recordMic' : 'recordSystem')" :aria-checked="recordEnabled" :class="{ on: recordEnabled }" :disabled="isRunning()" @click.prevent="recordEnabled = !recordEnabled" />
                 </label>
-                <div v-if="settings.recordMic">
+                <div v-if="recordEnabled">
                   <span class="mini">{{ t("recordFormat") }}</span>
                   <div class="seg" role="group" :aria-label="t('recordFormat')">
                     <button :aria-pressed="settings.recordFormat === 'wav'" :class="{ on: settings.recordFormat === 'wav' }" :disabled="isRunning()" @click="settings.recordFormat = 'wav'">WAV</button>
                     <button :aria-pressed="settings.recordFormat === 'mp3'" :class="{ on: settings.recordFormat === 'mp3' }" :disabled="isRunning()" @click="settings.recordFormat = 'mp3'">MP3</button>
                   </div>
                 </div>
-                <p class="hint">{{ t("recordMicHint") }}</p>
+                <p class="hint">{{ t(sourceKind === 'mic' ? "recordMicHint" : "recordSystemHint") }}</p>
                 <div class="row recording-row">
                   <span v-if="recordingState === 'recording'" class="hint">{{ t("recordingNow") }} {{ recordingFile }}</span>
                   <span v-else-if="recordingState === 'saved'" class="hint">{{ t("recordingSaved") }} {{ recordingFile }}</span>

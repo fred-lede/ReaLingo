@@ -168,9 +168,7 @@ pub fn start(
     #[cfg(windows)]
     if exclude_self && is_default_output(id) {
         let pipe = Pipe::new(crate::wasapi::RATE, crate::wasapi::CHANNELS as usize, rate, tx, level, dropped);
-        let _ = (recording_path, on_recording);
-        crate::wasapi::start(pipe, stop)?;
-        return Ok(None);
+        return crate::wasapi::start(pipe, stop, recording_path, on_recording).map(Some);
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = exclude_self;

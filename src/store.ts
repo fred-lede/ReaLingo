@@ -90,6 +90,8 @@ export interface Settings {
   history: boolean;
   /** Save the full microphone input as one file per run. */
   recordMic: boolean;
+  /** Save the captured system audio as one file per run. */
+  recordSystem: boolean;
   recordFormat: RecordingFormat;
   /** Legacy hotwords are migrated into glossary when saved settings load. */
   hotwords: Record<string, string>;
@@ -122,6 +124,7 @@ export const settings = reactive<Settings>({
   model: MODEL_QWEN3_5,
   history: false,
   recordMic: false,
+  recordSystem: false,
   recordFormat: "wav",
   hotwords: {},
   glossary: [],

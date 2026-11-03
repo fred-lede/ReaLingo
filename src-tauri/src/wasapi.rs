@@ -8,6 +8,7 @@
 //! user picked. Any other device never hears us and keeps the plain path.
 
 use anyhow::{anyhow, Result};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
@@ -21,23 +22,42 @@ use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_BLOB;
 
 use crate::audio::Pipe;
+use crate::recording;
 
 /// What we ask the engine to convert to (`AUTOCONVERTPCM`); the pipe takes it from there.
 pub const RATE: u32 = 48_000;
 pub const CHANNELS: u16 = 2;
 
-/// Same contract as `pulse::start`: returns once capture is running, or with the error.
-pub fn start(mut pipe: Pipe, stop: Arc<AtomicBool>) -> Result<()> {
+/// Returns once capture is running, plus the worker to join after stopping.
+pub fn start(mut pipe: Pipe, stop: Arc<AtomicBool>, recording_path: Option<PathBuf>, on_recording: impl FnOnce(Result<PathBuf>) + Send + 'static) -> Result<std::thread::JoinHandle<()>> {
+    let (mut recording, finish) = if let Some(path) = recording_path {
+        let (tap, finish) = recording::start(path, RATE, CHANNELS)?;
+        (Some(tap), Some(finish))
+    } else { (None, None) };
     let (ready_tx, ready_rx) = channel::<Result<(), String>>();
-    std::thread::spawn(move || {
-        if let Err(e) = unsafe { capture(&mut pipe, &stop, &ready_tx) } {
+    let stop_on_failure = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let result = unsafe { capture(&mut pipe, &stop, &ready_tx, recording.as_mut()) };
+        drop(recording);
+        if let Some(finish) = finish {
+            match &result {
+                Ok(()) => on_recording(finish.complete()),
+                Err(error) => {
+                    finish.abort();
+                    on_recording(Err(anyhow!("system audio capture failed: {error}")));
+                }
+            }
+        }
+        if let Err(e) = result {
             let _ = ready_tx.send(Err(e.to_string()));
         }
     });
-    ready_rx
-        .recv_timeout(Duration::from_secs(10))
+    let started = ready_rx.recv_timeout(Duration::from_secs(10));
+    if !matches!(&started, Ok(Ok(()))) { stop_on_failure.store(true, Ordering::Relaxed); }
+    started
         .map_err(|_| anyhow!("audio device did not start within 10s"))?
-        .map_err(|e| anyhow!("system audio capture failed: {e}"))
+        .map_err(|e| anyhow!("system audio capture failed: {e}"))?;
+    Ok(handle)
 }
 
 /// The activation completes on a worker thread; this just says so. It must be agile, or
@@ -53,7 +73,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Done_Impl {
 }
 impl IAgileObject_Impl for Done_Impl {}
 
-unsafe fn capture(pipe: &mut Pipe, stop: &AtomicBool, ready: &Sender<Result<(), String>>) -> Result<()> {
+unsafe fn capture(pipe: &mut Pipe, stop: &AtomicBool, ready: &Sender<Result<(), String>>, mut recording: Option<&mut recording::Tap>) -> Result<()> {
     CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
 
     let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
@@ -138,6 +158,7 @@ unsafe fn capture(pipe: &mut Pipe, stop: &AtomicBool, ready: &Sender<Result<(), 
                 frames_f32.extend(samples.iter().map(|&s| s as f32 / 32768.0));
             }
             reader.ReleaseBuffer(frames)?;
+            if let Some(tap) = recording.as_deref_mut() { tap.feed(&frames_f32); }
             pipe.feed(&frames_f32);
         }
     }
