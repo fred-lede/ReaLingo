@@ -14,10 +14,18 @@ export interface SourcePart {
   text: string;
 }
 
-export interface Line {
+/** A stretch of the input audio, ms from its start. Either end may be unknown. */
+export interface Span {
+  start?: number;
+  end?: number;
+}
+
+/** A row of the stream. Its span is absent on history written before spans were recorded. */
+export interface Line extends Span {
   id: number;
   source: string;
   target: string;
+  /** Wall-clock arrival, ms since the epoch. */
   at: number;
   parts?: SourcePart[];
 }
@@ -90,6 +98,10 @@ interface Turn {
   sourceDone: boolean;
   targetDone: boolean;
   at: number;
+  /** Where the server says this turn sits in the audio, when it says. */
+  server: Span;
+  /** Fallback: the audio clock when this turn's text first and last arrived. */
+  heard: Span;
   /** Set once the turn has a row in `lines`; the row is patched in place afterwards. */
   lineId?: number;
 }
@@ -97,6 +109,29 @@ interface Turn {
 const turns = new Map<string, Turn>();
 /** Input item id -> turn key, from the server's `link` event. */
 const byInput = new Map<string, string>();
+/** Input item id -> where speech_started / speech_stopped put it, until a turn claims it. */
+const spokenAt = new Map<string, Span>();
+
+/** Stretches `into` to cover `from`: the earliest start, the latest end. */
+function widen(into: Span, from: Span) {
+  if (from.start != null) into.start = Math.min(into.start ?? from.start, from.start);
+  if (from.end != null) into.end = Math.max(into.end ?? from.end, from.end);
+}
+
+/** The server's timing for this event, as a span. */
+const spanOf = (e: RtEvent): Span => ({ start: e.startMs, end: e.endMs });
+
+/** Times a turn from one of its events: the server's span, and the clock when it arrived. */
+function timeTurn(t: Turn, e: RtEvent) {
+  widen(t.server, spanOf(e));
+  if (e.atMs != null) {
+    t.heard.start ??= e.atMs;
+    t.heard.end = e.atMs;
+  }
+}
+
+/** What a turn's row shows: the server's timing where it gave one, else when it was heard. */
+const rowSpan = (t: Turn): Span => ({ start: t.server.start ?? t.heard.start, end: t.server.end ?? t.heard.end });
 
 const oldestTurn = () => turns.values().next().value as Turn | undefined;
 const newestTurn = () => [...turns.values()].pop();
@@ -115,6 +150,8 @@ function turnFor(key: string): Turn {
       sourceDone: false,
       targetDone: false,
       at: Date.now(),
+      server: {},
+      heard: {},
     };
     turns.set(key, t);
     // A turn whose transcript never arrives would sit here forever. Two or three are open
@@ -131,7 +168,7 @@ function publish(t: Turn) {
   if (!t.source && !t.target) return;
   if (t.lineId === undefined) {
     t.lineId = nextId++;
-    lines.value.push({ id: t.lineId, source: t.source, target: t.target, at: t.at, parts: [...t.parts] });
+    lines.value.push({ id: t.lineId, source: t.source, target: t.target, at: t.at, ...rowSpan(t), parts: [...t.parts] });
     if (lines.value.length > 500) lines.value.splice(0, lines.value.length - 500);
     return;
   }
@@ -139,6 +176,7 @@ function publish(t: Turn) {
   if (row) {
     row.source = t.source;
     row.target = t.target;
+    Object.assign(row, rowSpan(t));
     row.parts = [...t.parts];
   }
 }
@@ -152,10 +190,13 @@ function settle(t: Turn) {
 function close(t: Turn) {
   publish(t);
   if (t.source || t.target) {
-    record("history_append", { entry: { at: t.at, source: t.source, target: t.target, ...(t.parts.length ? { parts: t.parts } : {}) } });
+    record("history_append", { entry: { at: t.at, source: t.source, target: t.target, ...rowSpan(t), ...(t.parts.length ? { parts: t.parts } : {}) } });
   }
   turns.delete(t.key);
-  if (t.input) byInput.delete(t.input);
+  if (t.input) {
+    byInput.delete(t.input);
+    spokenAt.delete(t.input);
+  }
   syncCurrent();
 }
 
@@ -180,6 +221,7 @@ function syncCurrent() {
 function resetTurns() {
   turns.clear();
   byInput.clear();
+  spokenAt.clear();
   syncCurrent();
 }
 
@@ -193,6 +235,7 @@ interface RtEvent {
   done: boolean;
   startMs?: number;
   endMs?: number;
+  atMs?: number;
 }
 
 void listen<RtEvent>("rt://event", ({ payload: e }) => {
@@ -211,6 +254,8 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
     case "link": {
       byInput.set(e.text, e.id);
       turnFor(e.id).input = e.text;
+      const spoken = spokenAt.get(e.text);
+      if (spoken) widen(turnFor(e.id).server, spoken);
       break;
     }
 
@@ -220,7 +265,11 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
       const key = byInput.get(e.id) ?? newestTurn()?.key;
       if (!key) break;
       const t = turnFor(key);
-      if (e.startMs !== undefined && e.endMs !== undefined) {
+      timeTurn(t, e);
+      // The local ASR reports the span of the group as it grows, and the fragments one
+      // sentence was assembled from. A remote protocol's span is the sentence's own, not
+      // fragments, so it stays out of `parts`.
+      if (settings.mode === "local" && e.startMs !== undefined && e.endMs !== undefined) {
         const partText = e.text.startsWith(t.source) ? e.text.slice(t.source.length).replace(/^\n/, "") : e.text;
         t.parts.push({ startMs: e.startMs, endMs: e.endMs, text: partText });
       }
@@ -242,6 +291,7 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
 
     case "target": {
       const t = turnFor(e.id);
+      timeTurn(t, e);
       t.target = e.text;
       t.targetStash = e.done ? "" : e.stash;
       speaking.value = !e.done;
@@ -256,9 +306,17 @@ void listen<RtEvent>("rt://event", ({ payload: e }) => {
       break;
     }
 
-    case "speech":
+    case "speech": {
       speaking.value = e.text === "start";
+      if (!e.id) break;
+      // Usually ahead of the link that names its turn; held until then.
+      const spoken = spokenAt.get(e.id) ?? {};
+      widen(spoken, spanOf(e));
+      spokenAt.set(e.id, spoken);
+      const key = byInput.get(e.id);
+      if (key) widen(turnFor(key).server, spoken);
       break;
+    }
     case "progress":
       if (e.text === "done") fileProgress.value = null;
       else {
@@ -336,14 +394,26 @@ export function exportTxt(rows: Line[] = lines.value): string {
   return rows.map((l) => [l.source, l.target].filter(Boolean).join("\n")).join("\n\n");
 }
 
-/** SRT timings are derived from arrival time — good enough to follow along, not frame-accurate. */
+/**
+ * SRT timings are the line's place in the input audio — exact where the server reports it,
+ * otherwise when its text arrived on the audio's clock (late by the model's latency). History
+ * written before that was recorded falls back to wall-clock arrival, counted from the first line.
+ */
 export function exportSrt(rows: Line[] = lines.value): string {
+  const timed = rows.length > 0 && rows.every((l) => l.start != null);
   const t0 = rows[0]?.at ?? Date.now();
-  return rows
+  const startOf = (l: Line) => (timed ? l.start! : l.at - t0);
+  // Rows sit in the order their turns opened, which is not always audio order (a row on the
+  // fallback clock beside one the server timed), and cues must run in time order.
+  const cues = timed ? [...rows].sort((a, b) => a.start! - b.start!) : rows;
+  return cues
     .map((l, i) => {
-      const start = l.at - t0;
-      const end = (rows[i + 1]?.at ?? l.at + 3000) - t0;
-      const body = [l.source, l.target].filter(Boolean).join("\n");
+      const start = startOf(l);
+      const next = cues[i + 1] ? startOf(cues[i + 1]) : undefined;
+      // At least a glance on screen, but never past the next line's start: that wins.
+      const wanted = Math.max(start + 1000, timed && l.end != null ? l.end : (next ?? start + 3000));
+      const end = next != null ? Math.max(start + 1, Math.min(wanted, next)) : wanted;
+      const body = l.source ? `${l.source}\n${l.target}` : l.target;
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${body}\n`;
     })
     .join("\n");

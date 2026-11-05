@@ -1,7 +1,7 @@
 import { reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import { MODEL_QWEN3_5, MODEL_QWEN3_8, PROTOCOLS, type Vendor } from "./languages";
+import { MODEL_QWEN3_8, PROTOCOLS, type Vendor, type VoiceList } from "./languages";
 import { migrateGlossary, type GlossaryEntry } from "./glossary";
 
 /** Only the regions that serve the LiveTranslate models — see `config::Region` in Rust. */
@@ -55,16 +55,16 @@ export interface SubtitleStyle {
  * The message format, which follows the protocol rather than the vendor: Qwen3.8 speaks a
  * different schema from Qwen3/3.5. Model and URL are free-form on top of it.
  */
-export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini";
+export type Protocol = "qwen35" | "qwen38" | "openai" | "gemini" | "volc";
 export type ExecutionMode = "remote" | "local";
 export type TranslationPace = "fast" | "complete";
 export type RecordingFormat = "wav" | "mp3";
 
 /** Where each vendor's key lives. A key belongs to the account, not the protocol. */
-const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey", gemini: "geminiKey" } as const;
+const KEY_FIELD = { qwen: "apiKey", openai: "openaiKey", gemini: "geminiKey", volc: "volcKey" } as const;
 const keyField = (p: Protocol) => KEY_FIELD[PROTOCOLS[p].vendor];
 /** One protocol per credential-store slot, for the loops that visit every key once. */
-const KEY_SLOTS = ["qwen35", "openai", "gemini"] as const;
+const KEY_SLOTS = ["qwen35", "openai", "gemini", "volc"] as const;
 
 export interface Settings {
   mode: ExecutionMode;
@@ -76,11 +76,14 @@ export interface Settings {
   apiKey: string;
   openaiKey: string;
   geminiKey: string;
+  volcKey: string;
   /** Empty: the protocol's default endpoint. */
   url: string;
   /** What each protocol / vendor was last set to, restored when switching back to it. */
   savedModels: Partial<Record<Protocol, string>>;
   savedUrls: Partial<Record<Vendor, string>>;
+  /** The voice last picked from each voice list; the lists share `voice`. */
+  savedVoices: Partial<Record<VoiceList, string>>;
   workspaceId: string;
   region: Region;
   sourceLang: string;
@@ -99,6 +102,8 @@ export interface Settings {
   /** Read the translation aloud. Only takes effect where `canSpeak` allows it. */
   speak: boolean;
   voice: string;
+  /** Chinese<->English both ways in one session, where the protocol can (`twoWay`). */
+  twoWay: boolean;
   theme: Theme;
   sub: SubtitleStyle;
   stream: StreamStyle;
@@ -110,18 +115,20 @@ export const settings = reactive<Settings>({
   translationPace: "fast",
   whisperModelPath: "",
   translationModelPath: "",
-  protocol: "qwen35",
+  protocol: "qwen38",
   apiKey: "",
   openaiKey: "",
   geminiKey: "",
+  volcKey: "",
   url: "",
   savedModels: {},
   savedUrls: {},
+  savedVoices: {},
   workspaceId: "",
   region: "beijing",
   sourceLang: "auto",
   targetLang: "en",
-  model: MODEL_QWEN3_5,
+  model: MODEL_QWEN3_8,
   history: false,
   recordMic: false,
   recordSystem: false,
@@ -130,6 +137,7 @@ export const settings = reactive<Settings>({
   glossary: [],
   speak: false,
   voice: "Tina",
+  twoWay: false,
   theme: "system",
   sub: {
     show: false,
@@ -187,8 +195,9 @@ export async function initSettings(persist = true) {
     });
     settings.glossary = migrateGlossary(saved);
     settings.hotwords = {};
-    // Saved before the protocol was a setting: the model was what picked the 3.8 schema.
-    if (!saved.protocol) settings.protocol = saved.model === MODEL_QWEN3_8 ? "qwen38" : "qwen35";
+    // Saved before the protocol was a setting: the model was what picked the 3.8 schema. With
+    // no model saved either there was no choice to keep, and the new defaults stand as a pair.
+    if (!saved.protocol && saved.model) settings.protocol = saved.model === MODEL_QWEN3_8 ? "qwen38" : "qwen35";
     // Before the two rows were sized separately, the bar had one `fontSize` and the source
     // line was 0.62em of it. Carry that pair over so an existing install looks unchanged.
     const oldSub = saved.sub as (Partial<SubtitleStyle> & { fontSize?: number }) | undefined;

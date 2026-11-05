@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region, type TranslationPace } from "../store";
 import { isRunning } from "../stream";
-import { PRESETS, PROTOCOLS } from "../languages";
+import { PRESETS, PROTOCOLS, type Vendor } from "../languages";
 import { t } from "../i18n";
 import Picker from "./Picker.vue";
 import Sheet from "./Sheet.vue";
@@ -91,6 +91,7 @@ const protocolOptions = computed(() => [
   { value: "qwen38", label: t("protocolQwen38"), note: t("vendorQwen") },
   { value: "openai", label: t("protocolOpenai") },
   { value: "gemini", label: t("protocolGemini"), note: "Google" },
+  { value: "volc", label: t("protocolVolc"), note: t("vendorVolc") },
 ]);
 const protocolPick = computed({
   get: () => settings.protocol as string,
@@ -105,9 +106,14 @@ const keyConsole = computed(
       qwen: consoleUrl("model/settings/api-key"),
       openai: "https://platform.openai.com/api-keys",
       gemini: "https://aistudio.google.com/apikey",
+      volc: "https://console.volcengine.com/speech/new/setting/apikeys",
     })[vendor.value]
 );
-const KEY_LABEL = { qwen: "apiKeyGet", openai: "apiKeyGetOpenai", gemini: "apiKeyGetGemini" } as const;
+const KEY_LABEL = { qwen: "apiKeyGet", openai: "apiKeyGetOpenai", gemini: "apiKeyGetGemini", volc: "apiKeyGetVolc" } as const;
+/** Where a vendor's key has to be switched on before it works: Volcengine's needs the model
+ *  enabled by hand, on a page of its own. */
+const ACTIVATE: Partial<Record<Vendor, string>> = { volc: "https://console.volcengine.com/speech/new/setting/activate" };
+const activateUrl = computed(() => ACTIVATE[vendor.value]);
 const keyConsoleLabel = computed(() => t(KEY_LABEL[vendor.value]));
 // The opener plugin, not an <a href>: a plain link navigates the app's own webview away.
 const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
@@ -170,6 +176,9 @@ const advancedOpen = !!settings.url;
           {{ keyringOk ? t("apiKeyHint") : t("apiKeyPlain") }}
           <button class="link" @click.prevent="openUrl(keyConsole)">
             {{ keyConsoleLabel }} ↗
+          </button>
+          <button v-if="activateUrl" class="link" @click.prevent="openUrl(activateUrl)">
+            {{ t("volcActivate") }} ↗
           </button>
         </small>
       </label>

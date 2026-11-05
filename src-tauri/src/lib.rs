@@ -9,6 +9,7 @@ mod recording;
 pub mod realtime;
 pub mod pulse;
 pub mod resample;
+pub mod volc;
 mod secret;
 #[cfg(target_os = "macos")]
 mod tap;
@@ -481,6 +482,7 @@ pub fn run() {
             history::history_delete,
             history::history_clear,
             history::history_open_dir,
+            history::history_dir,
             tray::sync_tray
         ])
         .build(tauri::generate_context!())

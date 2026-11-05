@@ -1,5 +1,15 @@
+use base64::prelude::{Engine, BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{BTreeMap, HashSet};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::Message;
+
+fn json_message(v: serde_json::Value) -> Message {
+    Message::Text(v.to_string().into())
+}
 
 pub const MODEL_QWEN3_5: &str = "qwen3.5-livetranslate-flash-realtime";
 pub const MODEL_QWEN3_8: &str = "qwen3.8-livetranslate-flash-realtime";
@@ -11,6 +21,8 @@ pub const MODEL_OPENAI: &str = "gpt-realtime-translate";
 /// Without a transcription model the OpenAI session sends no source transcript at all.
 pub const OPENAI_ASR_MODEL: &str = "gpt-realtime-whisper";
 pub const MODEL_GEMINI: &str = "gemini-3.5-live-translate-preview";
+/// Display only: the AST endpoint takes no model name.
+pub const MODEL_VOLC: &str = "doubao-ast-2.0";
 const GEMINI_URL: &str =
     "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 /// The service's own default; any name from the Model Studio voice list works.
@@ -53,12 +65,14 @@ impl Region {
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     /// Qwen3.5, and Qwen3 with it.
-    #[default]
     Qwen35,
+    #[default]
     Qwen38,
     Openai,
     /// Google's Gemini Live API (`BidiGenerateContent`) with a `translationConfig`.
     Gemini,
+    /// Volcengine Doubao simultaneous interpretation: protobuf frames, see `volc.rs`.
+    Volc,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -105,6 +119,8 @@ pub struct Settings {
     pub openai_key: String,
     #[serde(default)]
     pub gemini_key: String,
+    #[serde(default)]
+    pub volc_key: String,
     /// Optional. Empty => the protocol's own endpoint; set => dialled as-is, plus `model=`
     /// unless the URL already carries one (Qwen, OpenAI — Gemini names its model in `setup`).
     #[serde(default)]
@@ -140,6 +156,9 @@ pub struct Settings {
     pub whisper_model_path: String,
     #[serde(default)]
     pub translation_model_path: String,
+    /// Translate both ways between the two languages. Only Volc (Chinese–English) does.
+    #[serde(default)]
+    pub two_way: bool,
 }
 
 fn auto() -> String {
@@ -208,6 +227,7 @@ impl Settings {
             Protocol::Qwen35 | Protocol::Qwen38 => &self.api_key,
             Protocol::Openai => &self.openai_key,
             Protocol::Gemini => &self.gemini_key,
+            Protocol::Volc => &self.volc_key,
         }
     }
 
@@ -216,6 +236,7 @@ impl Settings {
             Protocol::Qwen35 | Protocol::Qwen38 => &mut self.api_key,
             Protocol::Openai => &mut self.openai_key,
             Protocol::Gemini => &mut self.gemini_key,
+            Protocol::Volc => &mut self.volc_key,
         }
     }
 
@@ -225,6 +246,7 @@ impl Settings {
             ("", Protocol::Qwen38) => MODEL_QWEN3_8,
             ("", Protocol::Openai) => MODEL_OPENAI,
             ("", Protocol::Gemini) => MODEL_GEMINI,
+            ("", Protocol::Volc) => MODEL_VOLC,
             (m, _) => m,
         }
     }
@@ -236,37 +258,82 @@ impl Settings {
         }
         match self.protocol {
             Protocol::Openai => 24_000,
-            Protocol::Qwen35 | Protocol::Qwen38 | Protocol::Gemini => 16_000,
+            Protocol::Qwen35 | Protocol::Qwen38 | Protocol::Gemini | Protocol::Volc => 16_000,
         }
     }
 
-    /// One chunk of base64 PCM, wrapped the way the protocol wants it.
-    pub fn audio_frame(&self, b64: String) -> serde_json::Value {
+    /// The session's configuration, first frame on the socket. `session` names the session
+    /// for the protocols that want one in every frame (Volc); the others ignore it.
+    pub fn setup_message(&self, session: &str) -> Message {
         match self.protocol {
-            Protocol::Qwen35 | Protocol::Qwen38 => serde_json::json!({ "type": "input_audio_buffer.append", "audio": b64 }),
-            Protocol::Openai => serde_json::json!({ "type": "session.input_audio_buffer.append", "audio": b64 }),
-            Protocol::Gemini => serde_json::json!({
-                "realtimeInput": { "audio": { "data": b64, "mimeType": format!("audio/pcm;rate={}", self.sample_rate()) } }
-            }),
+            Protocol::Volc => Message::Binary(crate::volc::start(self, session).into()),
+            _ => json_message(self.session_update()),
+        }
+    }
+
+    /// One chunk of PCM16 little-endian, framed the way the protocol wants it.
+    pub fn audio_message(&self, session: &str, pcm: Vec<u8>) -> Message {
+        let b64 = || BASE64_STANDARD.encode(&pcm);
+        match self.protocol {
+            Protocol::Qwen35 | Protocol::Qwen38 => json_message(json!({ "type": "input_audio_buffer.append", "audio": b64() })),
+            Protocol::Openai => json_message(json!({ "type": "session.input_audio_buffer.append", "audio": b64() })),
+            Protocol::Gemini => json_message(json!({
+                "realtimeInput": { "audio": { "data": b64(), "mimeType": format!("audio/pcm;rate={}", self.sample_rate()) } }
+            })),
+            Protocol::Volc => Message::Binary(crate::volc::audio(session, pcm).into()),
         }
     }
 
     /// End of input: the server flushes the last sentence, then (except Gemini) says so.
-    pub fn finish_frame(&self) -> serde_json::Value {
+    pub fn finish_message(&self, session: &str) -> Message {
         match self.protocol {
-            Protocol::Qwen35 | Protocol::Qwen38 => serde_json::json!({ "type": "session.finish" }),
-            Protocol::Openai => serde_json::json!({ "type": "session.close" }),
-            Protocol::Gemini => serde_json::json!({ "realtimeInput": { "audioStreamEnd": true } }),
+            Protocol::Qwen35 | Protocol::Qwen38 => json_message(json!({ "type": "session.finish" })),
+            Protocol::Openai => json_message(json!({ "type": "session.close" })),
+            Protocol::Gemini => json_message(json!({ "realtimeInput": { "audioStreamEnd": true } })),
+            Protocol::Volc => Message::Binary(crate::volc::finish(session).into()),
         }
     }
 
-    /// Whether this frame means everything owed after `finish_frame` has arrived.
+    /// The handshake request, with the key where the protocol expects it.
+    pub fn client_request(&self) -> anyhow::Result<Request> {
+        let key = self.key().trim();
+        let mut request = match self.protocol {
+            // The Live API takes the key as a query parameter. Added here, never in `ws_url`,
+            // which the Settings sheet displays; a custom URL that already carries one keeps it.
+            Protocol::Gemini => return Ok(with_param(&self.ws_url(), "key", key).into_client_request()?),
+            _ => self.ws_url().into_client_request()?,
+        };
+        let headers = request.headers_mut();
+        match self.protocol {
+            // The new console's API key; the resource id names the AST service.
+            Protocol::Volc => {
+                headers.insert("X-Api-Key", HeaderValue::from_str(key)?);
+                headers.insert("X-Api-Resource-Id", HeaderValue::from_static(crate::volc::RESOURCE_ID));
+            }
+            _ => {
+                headers.insert("Authorization", HeaderValue::from_str(&format!("Bearer {key}"))?);
+            }
+        }
+        Ok(request)
+    }
+
+    /// A binary frame as the JSON every later step reads: Volc's protobuf decoded, Gemini's
+    /// JSON (which it sends in binary frames) parsed.
+    pub fn decode_binary(&self, bytes: &[u8]) -> Option<serde_json::Value> {
+        match self.protocol {
+            Protocol::Volc => crate::volc::decode(bytes),
+            _ => serde_json::from_slice(bytes).ok(),
+        }
+    }
+
+    /// Whether this frame means everything owed after `finish_message` has arrived.
     pub fn is_finished(&self, v: &serde_json::Value) -> bool {
         let ty = v.get("type").and_then(serde_json::Value::as_str);
         match self.protocol {
             Protocol::Qwen35 | Protocol::Qwen38 => ty == Some("session.finished"),
             Protocol::Openai => ty == Some("session.closed"),
             Protocol::Gemini => false,
+            Protocol::Volc => ty == Some("volc.SessionFinished"),
         }
     }
 
@@ -289,7 +356,35 @@ impl Settings {
 
     /// Gemini wants its `setup` acknowledged before any audio; the others take it at once.
     pub fn waits_for_setup(&self) -> bool {
-        self.protocol == Protocol::Gemini
+        matches!(self.protocol, Protocol::Gemini | Protocol::Volc)
+    }
+
+    /// The frame that releases audio for a protocol that `waits_for_setup`.
+    pub fn is_ready(&self, v: &serde_json::Value) -> bool {
+        match self.protocol {
+            Protocol::Gemini => v.get("setupComplete").is_some(),
+            Protocol::Volc => v.get("type").and_then(serde_json::Value::as_str) == Some("volc.SessionStarted"),
+            _ => true,
+        }
+    }
+
+    /// The reason a frame ends the session, if it does.
+    ///
+    /// DashScope refuses a session (unknown model, bad parameter) with a bare
+    /// `{"code", "message"}` frame — no `type` — and then never sends anything else. Without
+    /// this the session sat silent until the idle timeout, with nothing on screen to say why.
+    /// Volc fails a session with an event of its own, the reason in its response meta.
+    pub fn rejection(&self, v: &serde_json::Value) -> Option<String> {
+        let field = |k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default();
+        let ty = v.get("type").and_then(serde_json::Value::as_str);
+        match (self.protocol, ty) {
+            (Protocol::Volc, Some("volc.SessionFailed" | "volc.SessionCanceled")) => {
+                let code = v.get("status_code").and_then(serde_json::Value::as_i64).unwrap_or_default();
+                Some(format!("{code}: {}", field("message")))
+            }
+            (Protocol::Volc, _) | (_, Some(_)) => None,
+            (_, None) => Some(format!("{}: {}", v.get("code")?.as_str()?, field("message"))),
+        }
     }
 
     /// Target language as the service spells it: Gemini wants a script or regional variant
@@ -307,7 +402,7 @@ impl Settings {
         let custom = self.url.trim();
         if !custom.is_empty() {
             return match self.protocol {
-                Protocol::Gemini => custom.to_string(),
+                Protocol::Gemini | Protocol::Volc => custom.to_string(),
                 _ => with_param(custom, "model", model),
             };
         }
@@ -315,6 +410,7 @@ impl Settings {
             Protocol::Openai => return format!("wss://api.openai.com/v1/realtime/translations?model={model}"),
             // Without the key: it goes on at connect time, because Settings displays this.
             Protocol::Gemini => return GEMINI_URL.into(),
+            Protocol::Volc => return crate::volc::URL.into(),
             Protocol::Qwen35 | Protocol::Qwen38 => {}
         }
         let ws = self.workspace_id.trim();
@@ -333,7 +429,9 @@ impl Settings {
     /// the live endpoint, probed field by field, wants the transcription switches at the top of
     /// `setup` and `translationConfig` inside `generationConfig` — anything else is closed
     /// with "Unknown name … Cannot find field".
-    pub fn session_update(&self) -> serde_json::Value {
+    ///
+    /// JSON protocols only: Volc's setup is protobuf, built by `setup_message`.
+    fn session_update(&self) -> serde_json::Value {
         if self.protocol == Protocol::Gemini {
             // Echo off: a speaker already in the target language is not read back. The source
             // is always detected; there is no source-language setting to send.
@@ -449,6 +547,10 @@ mod tests {
         assert!(enabled.transcribe_only);
     }
 
+    fn text_json(m: Message) -> serde_json::Value {
+        serde_json::from_str(m.to_text().unwrap()).unwrap()
+    }
+
     /// Qwen3.5 settings with a key for every vendor, so each test only changes what it is about.
     fn qwen(region: Region, workspace_id: &str) -> Settings {
         Settings {
@@ -459,6 +561,7 @@ mod tests {
             api_key: "k".into(),
             openai_key: "o".into(),
             gemini_key: "g".into(),
+            volc_key: "v".into(),
             url: String::new(),
             workspace_id: workspace_id.into(),
             region,
@@ -471,6 +574,7 @@ mod tests {
             voice: VOICE.into(),
             whisper_model_path: String::new(),
             translation_model_path: String::new(),
+            two_way: false,
         }
     }
 
@@ -684,7 +788,7 @@ mod tests {
         assert_eq!(o.ws_url(), "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate");
         assert_eq!(o.key(), "o");
         assert_eq!(o.sample_rate(), 24_000);
-        assert_eq!(o.audio_frame("QQ==".into())["type"], "session.input_audio_buffer.append");
+        assert_eq!(text_json(o.audio_message("", b"A".to_vec()))["type"], "session.input_audio_buffer.append");
         let session = &o.session_update()["session"];
         assert_eq!(session["audio"]["output"]["language"], "zh");
         assert_eq!(session["audio"]["input"]["transcription"]["model"], OPENAI_ASR_MODEL);
@@ -755,12 +859,51 @@ mod tests {
         g.target_lang = "ja".into();
         assert_eq!(g.session_update()["setup"]["generationConfig"]["translationConfig"]["targetLanguageCode"], "ja");
 
-        let audio = g.audio_frame("QQ==".into());
+        let audio = text_json(g.audio_message("", b"A".to_vec()));
         assert_eq!(audio["realtimeInput"]["audio"]["mimeType"], "audio/pcm;rate=16000");
         assert_eq!(audio["realtimeInput"]["audio"]["data"], "QQ==");
-        assert_eq!(g.finish_frame()["realtimeInput"]["audioStreamEnd"], true);
+        assert_eq!(text_json(g.finish_message(""))["realtimeInput"]["audioStreamEnd"], true);
         // A custom URL is a proxy for the same protocol: no model= tacked on.
         g.url = "wss://proxy.example/gemini".into();
         assert_eq!(g.ws_url(), "wss://proxy.example/gemini");
+    }
+
+    #[test]
+    fn each_protocol_puts_its_key_where_it_expects_it() {
+        let mut s = qwen(Region::Beijing, "");
+        s.protocol = Protocol::Gemini;
+        s.gemini_key = "AIza-test".into();
+        let req = s.client_request().unwrap();
+        assert!(req.uri().to_string().ends_with("BidiGenerateContent?key=AIza-test"));
+        assert!(req.headers().get("Authorization").is_none());
+
+        s.protocol = Protocol::Openai;
+        s.openai_key = "sk-test".into();
+        let req = s.client_request().unwrap();
+        assert_eq!(req.headers()["Authorization"], "Bearer sk-test");
+        assert!(!req.uri().to_string().contains("key="));
+
+        s.protocol = Protocol::Volc;
+        let req = s.client_request().unwrap();
+        assert_eq!((&req.headers()["X-Api-Key"], &req.headers()["X-Api-Resource-Id"]), (&"v".parse::<HeaderValue>().unwrap(), &crate::volc::RESOURCE_ID.parse::<HeaderValue>().unwrap()));
+        assert!(req.headers().get("Authorization").is_none());
+        assert!(s.setup_message("s").is_binary() && s.audio_message("s", vec![0; 4]).is_binary() && s.finish_message("s").is_binary());
+    }
+
+    /// The bare frame was captured from a Tokyo workspace, which has no LiveTranslate models.
+    #[test]
+    fn a_rejected_session_says_why() {
+        let q = qwen(Region::Beijing, "");
+        let v = json!({ "code": "InvalidParameter", "message": "Model not exist.", "request_id": "x" });
+        assert_eq!(q.rejection(&v).unwrap(), "InvalidParameter: Model not exist.");
+        // Typed frames, including the recoverable `error` event, are not rejections.
+        assert!(q.rejection(&json!({ "type": "error", "error": { "message": "busy" } })).is_none());
+        assert!(q.rejection(&json!({ "type": "session.created" })).is_none());
+
+        let mut v = qwen(Region::Beijing, "");
+        v.protocol = Protocol::Volc;
+        let failed = json!({ "type": "volc.SessionFailed", "status_code": 45000001, "message": "bad param" });
+        assert_eq!(v.rejection(&failed).unwrap(), "45000001: bad param");
+        assert!(v.rejection(&json!({ "type": "volc.UsageResponse" })).is_none());
     }
 }

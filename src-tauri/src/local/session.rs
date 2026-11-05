@@ -2,7 +2,7 @@ use super::{asr::SubtitleSegment, glossary::GlossaryMatcher, LocalModels, LocalT
 use super::backend_status::BackendStatus;
 use crate::{
     config::{Settings, TranslationPace},
-    realtime::{self, Event},
+    realtime::{self, Event, Span},
 };
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver as GroupReceiver, RecvTimeoutError, Sender};
@@ -531,8 +531,7 @@ impl LocalSession {
                         text: group.display_text(),
                         lang: if source_lang == "auto" { String::new() } else { source_lang.to_owned() },
                         id: group.input.clone(),
-                        start_ms: Some(start_ms),
-                        end_ms: Some(end_ms),
+                        span: Span { start_ms: Some(start_ms as u64), end_ms: Some(end_ms as u64) },
                         done: false,
                         ..Default::default()
                     });

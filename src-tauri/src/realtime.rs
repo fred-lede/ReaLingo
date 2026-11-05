@@ -1,4 +1,4 @@
-//! WebSocket client for the realtime translation endpoints (Model Studio, OpenAI, Gemini).
+//! WebSocket client for the realtime translation endpoints (Model Studio, OpenAI, Gemini, Volcengine).
 //!
 //! This lives in Rust rather than the webview for one hard reason: the endpoint authenticates
 //! with an `Authorization` request header, and the browser `WebSocket` constructor cannot set
@@ -10,19 +10,16 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Notify;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::handshake::client::Request;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::config::{with_param, Protocol, Settings};
+use crate::config::Settings;
 use crate::player::Player;
 use crate::resample::chunk_samples;
 
@@ -45,10 +42,6 @@ const QUIET_END: Duration = Duration::from_secs(4);
 pub struct Event {
     pub kind: &'static str,
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub end_ms: Option<i64>,
     /// Unconfirmed tail — worth showing, but greyed out; it can still change.
     pub stash: String,
     /// Source language the model detected (transcript events only).
@@ -59,6 +52,36 @@ pub struct Event {
     /// the normal order — gets attached to whatever turn happens to be open.
     pub id: String,
     pub done: bool,
+    /// Where this speech sits in the input audio, when the server says.
+    #[serde(flatten)]
+    pub span: Span,
+    /// How much audio had been sent when this arrived — the fallback timeline for servers
+    /// that give no timing. Late by the model's latency, but on the audio's clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+}
+
+/// A stretch of the input audio, ms from its start. Either end may be unknown. Flattened
+/// into `Event`, so the frontend sees `startMs` / `endMs`.
+#[derive(Serialize, Clone, Copy, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Span {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<u64>,
+}
+
+impl Span {
+    pub fn new(start_ms: Option<u64>, end_ms: Option<u64>) -> Self {
+        Span { start_ms, end_ms }
+    }
+
+    /// Stretched to take in `ms`: the first mark is the start, the latest the end.
+    fn reach(&mut self, ms: u64) {
+        self.start_ms = self.start_ms.or(Some(ms));
+        self.end_ms = Some(ms);
+    }
 }
 
 pub fn emit(app: &AppHandle, ev: Event) {
@@ -96,14 +119,16 @@ async fn connect_and_pump(
         return Err(anyhow!("API key is empty"));
     }
 
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(client_request(settings)?))
+    let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(settings.client_request()?))
         .await
         .map_err(|_| anyhow!("connection timed out after 15s"))?
         .map_err(|e| anyhow!("connect failed: {e}"))?;
 
     let (mut write, mut read) = ws.split();
     let mut text_stream = TextStream::default();
-    write.send(Message::Text(settings.session_update().to_string().into())).await?;
+    // Volc names every frame with a session id of our choosing.
+    let session = format!("realingo-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos());
+    write.send(settings.setup_message(&session)).await?;
     note(app, "status", "connected");
 
     // Released at once, except for Gemini, which drops audio sent before `setupComplete`.
@@ -114,19 +139,21 @@ async fn connect_and_pump(
 
     // Uplink: PCM chunks -> base64 -> the protocol's audio frame, until the user stops or
     // the source runs out (a file at EOF drops its sender).
-    let (stop_up, ready_up, wire) = (stop.clone(), ready.clone(), settings.clone());
+    // Samples sent so far: the audio clock behind `Event::at_ms`.
+    let sent = Arc::new(AtomicU64::new(0));
+    let (stop_up, ready_up, wire, sent_up, sid) = (stop.clone(), ready.clone(), settings.clone(), sent.clone(), session.clone());
     let uplink = tokio::spawn(async move {
         ready_up.notified().await;
         while let Some(chunk) = audio_rx.recv().await {
             if stop_up.load(Ordering::Relaxed) {
                 break;
             }
+            sent_up.fetch_add(chunk.len() as u64, Ordering::Relaxed);
             let mut bytes = Vec::with_capacity(chunk.len() * 2);
             for s in &chunk {
                 bytes.extend_from_slice(&s.to_le_bytes());
             }
-            let frame = wire.audio_frame(BASE64_STANDARD.encode(&bytes));
-            if write.send(Message::Text(frame.to_string().into())).await.is_err() {
+            if write.send(wire.audio_message(&sid, bytes)).await.is_err() {
                 return None;
             }
         }
@@ -135,14 +162,13 @@ async fn connect_and_pump(
         // A pause for the protocols that need one to let go of the last words, paced like
         // the file decoder rather than dumped at once.
         let chunk = chunk_samples(wire.sample_rate());
-        let silence = wire.audio_frame(BASE64_STANDARD.encode(vec![0u8; chunk * 2])).to_string();
         for _ in 0..wire.flush_silence() / chunk {
-            if write.send(Message::Text(silence.clone().into())).await.is_err() {
+            if write.send(wire.audio_message(&sid, vec![0u8; chunk * 2])).await.is_err() {
                 return None;
             }
             tokio::time::sleep(Duration::from_millis(80)).await;
         }
-        let _ = write.send(Message::Text(wire.finish_frame().to_string().into())).await;
+        let _ = write.send(wire.finish_message(&sid)).await;
         // Not closed here: a close frame makes the server hang up before the last sentence
         // is out. The reader closes it once `is_finished` says everything has arrived.
         Some(write)
@@ -167,12 +193,16 @@ async fn connect_and_pump(
             Ok(None) => break,
             Ok(Some(m)) => m,
         };
-        let payload = match msg {
-            Ok(Message::Text(text)) => text.as_str().to_owned(),
-            // Gemini sends its JSON in binary frames.
-            Ok(Message::Binary(bytes)) => match String::from_utf8(bytes.to_vec()) {
-                Ok(text) => text,
+        let mut value = match msg {
+            Ok(Message::Text(text)) => match serde_json::from_str::<Value>(text.as_str()) {
+                Ok(v) => v,
                 Err(_) => continue,
+            },
+            // Gemini sends its JSON in binary frames; Volc speaks protobuf. Either way it comes
+            // out as JSON, so everything below is the same for every protocol.
+            Ok(Message::Binary(bytes)) => match settings.decode_binary(&bytes) {
+                Some(v) => v,
+                None => continue,
             },
             // Gemini reports a bad key or setup by closing with a reason, not with a frame.
             Ok(Message::Close(Some(frame))) if frame.code != CloseCode::Normal && !frame.reason.is_empty() => {
@@ -182,8 +212,7 @@ async fn connect_and_pump(
             Ok(_) => continue,
             Err(e) => return Err(anyhow!("socket error: {e}")),
         };
-        let Ok(mut value) = serde_json::from_str::<Value>(&payload) else { continue };
-        if value.get("setupComplete").is_some() {
+        if settings.is_ready(&value) {
             ready.notify_one();
         }
         if let Some(audio) = take_audio(&mut value) {
@@ -195,12 +224,16 @@ async fn connect_and_pump(
             }
         }
         let _ = app.emit(RAW_EVENT, &value);
-        if let Some(reason) = rejection(&value) {
+        if let Some(reason) = settings.rejection(&value) {
             return Err(anyhow!(reason));
         }
-        for ev in text_stream.next(&value) {
+        let now_ms = sent.load(Ordering::Relaxed) * 1000 / settings.sample_rate() as u64;
+        for mut ev in text_stream.next(&value) {
             if !ev.text.is_empty() {
                 heard = Instant::now();
+            }
+            if matches!(ev.kind, "source" | "target") {
+                ev.at_ms = Some(now_ms);
             }
             emit(app, ev);
         }
@@ -218,32 +251,6 @@ async fn connect_and_pump(
     Ok(())
 }
 
-/// The handshake request, with the key where the protocol expects it. Public so the probe
-/// example dials exactly what the app does.
-pub fn client_request(settings: &Settings) -> Result<Request> {
-    let key = settings.key().trim();
-    if settings.protocol == Protocol::Gemini {
-        // The Live API takes the key as a query parameter. Added here, never in `ws_url`,
-        // which the Settings sheet displays; a custom URL that already carries one keeps it.
-        return Ok(with_param(&settings.ws_url(), "key", key).into_client_request()?);
-    }
-    let mut request = settings.ws_url().into_client_request()?;
-    request.headers_mut().insert("Authorization", HeaderValue::from_str(&format!("Bearer {key}"))?);
-    Ok(request)
-}
-
-/// DashScope refuses a session (unknown model, bad parameter) with a bare
-/// `{"code", "message"}` frame — no `type` — and then never sends anything else. Without
-/// this the session sat silent until the idle timeout, with nothing on screen to say why.
-fn rejection(v: &Value) -> Option<String> {
-    if v.get("type").is_some() {
-        return None;
-    }
-    let code = v.get("code")?.as_str()?;
-    let message = v.get("message").and_then(Value::as_str).unwrap_or_default();
-    Some(format!("{code}: {message}"))
-}
-
 /// Pulls the PCM out of an audio delta frame and leaves its byte count behind:
 /// several KB of base64 ten times a second is no use in the diagnostics drawer.
 fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
@@ -252,7 +259,11 @@ fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
         Some("response.audio.delta" | "session.output_audio.delta")
     );
     // Qwen and OpenAI carry one `delta`; Gemini a list of parts, each with inline data.
-    let slots: Vec<&mut Value> = if is_delta {
+    // Volc: TTSResponse audio, base64-encoded by `volc::decode` under `data`.
+    let is_volc = v.get("type").and_then(Value::as_str) == Some("volc.TTSResponse");
+    let slots: Vec<&mut Value> = if is_volc {
+        v.get_mut("data").into_iter().collect()
+    } else if is_delta {
         v.get_mut("delta").into_iter().collect()
     } else if let Some(parts) = v.pointer_mut("/serverContent/modelTurn/parts").and_then(Value::as_array_mut) {
         parts.iter_mut().filter_map(|p| p.pointer_mut("/inlineData/data")).collect()
@@ -268,14 +279,16 @@ fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
     (!pcm.is_empty()).then_some(pcm)
 }
 
+/// Turns server frames into normalised events. Each protocol shapes its text differently, so
+/// each keeps its own state here; `next` only routes a frame to the one it belongs to.
 #[derive(Default)]
 struct TextStream {
+    /// Qwen: item-keyed deltas, see [`TextStream::itemised`].
     partial: BTreeMap<(&'static str, String), String>,
-    /// OpenAI and Gemini: the one open turn, see [`TextStream::continuous`].
-    turn: u64,
-    open: bool,
-    source: String,
-    target: String,
+    /// OpenAI and Gemini.
+    continuous: Continuous,
+    /// Volc.
+    volc: VolcSentences,
 }
 
 /// Past this many characters a translation with no sentence end is cut anyway, so a speaker
@@ -284,13 +297,16 @@ const MAX_TURN_CHARS: usize = 150;
 
 impl TextStream {
     fn next(&mut self, v: &Value) -> Vec<Event> {
+        if let Some(name) = v.get("type").and_then(Value::as_str).and_then(|t| t.strip_prefix("volc.")) {
+            return self.volc.next(name, v);
+        }
         // Gemini: the same two append-only streams as OpenAI, untyped, and one frame may carry
         // either or both alongside the audio.
         if let Some(content) = v.get("serverContent") {
             let mut out = Vec::new();
             for (field, is_target) in [("inputTranscription", false), ("outputTranscription", true)] {
                 if let Some(text) = content.pointer(&format!("/{field}/text")).and_then(Value::as_str) {
-                    out.extend(self.continuous(is_target, text));
+                    out.extend(self.continuous.push(is_target, text, None));
                 }
             }
             return out;
@@ -298,19 +314,55 @@ impl TextStream {
         match v.get("type").and_then(Value::as_str) {
             Some(ty @ ("session.input_transcript.delta" | "session.output_transcript.delta")) => {
                 let delta = v.get("delta").and_then(Value::as_str).unwrap_or_default();
-                self.continuous(ty == "session.output_transcript.delta", delta)
+                // Only the transcript's `elapsed_ms` places the row in the input audio.
+                let is_target = ty == "session.output_transcript.delta";
+                let elapsed = v.get("elapsed_ms").and_then(Value::as_u64).filter(|_| !is_target);
+                self.continuous.push(is_target, delta, elapsed)
             }
             _ => self.itemised(v).into_iter().collect(),
         }
     }
 
-    /// OpenAI sends two bare append-only streams: no turns, no ids, no "done". The frontend's
-    /// turn model needs all three, so they are made up here. Both streams share a turn id, a
-    /// sentence end in the translation closes the turn, and the transcript is cut at its own
-    /// last sentence end with the rest carried into the next turn.
-    // ponytail: punctuation pairing, so a row's source and translation can be a clause apart;
-    // align on `elapsed_ms` if that turns out to matter.
-    fn continuous(&mut self, is_target: bool, delta: &str) -> Vec<Event> {
+    fn itemised(&mut self, v: &Value) -> Option<Event> {
+        let kind = match v.get("type")?.as_str()? {
+            "conversation.item.input_audio_transcription.delta" => "source",
+            "response.text.delta" | "response.audio_transcript.delta" => "target",
+            _ => {
+                let ev = classify(v)?;
+                if ev.done {
+                    self.partial.remove(&(ev.kind, ev.id.clone()));
+                }
+                return Some(ev);
+            }
+        };
+        let id = v.get("item_id")?.as_str()?.to_string();
+        let text = self.partial.entry((kind, id.clone())).or_default();
+        text.push_str(v.get("delta")?.as_str()?);
+        Some(Event { kind, id, text: text.clone(), ..Default::default() })
+    }
+}
+
+/// OpenAI and Gemini send two bare append-only streams: no turns, no ids, no "done". The
+/// frontend's turn model needs all three, so they are made up here. Both streams share a turn
+/// id, a sentence end in the translation closes the turn, and the transcript is cut at its own
+/// last sentence end with the rest carried into the next turn.
+// ponytail: punctuation pairing, so a row's source and translation can be a clause apart;
+// `elapsed_ms` only times the rows (see `span`); pair on it too if that turns out to matter.
+#[derive(Default)]
+struct Continuous {
+    turn: u64,
+    open: bool,
+    source: String,
+    target: String,
+    /// OpenAI: the open turn's first and last `elapsed_ms` on the input transcript.
+    span: Span,
+}
+
+impl Continuous {
+    fn push(&mut self, is_target: bool, delta: &str, elapsed: Option<u64>) -> Vec<Event> {
+        if let Some(ms) = elapsed {
+            self.span.reach(ms);
+        }
         let mut out = Vec::new();
         if is_target { &mut self.target } else { &mut self.source }.push_str(delta);
         if is_target {
@@ -321,6 +373,8 @@ impl TextStream {
                 let source_cut = last_sentence_end(&self.source).unwrap_or(self.source.len());
                 let source_rest = self.source.split_off(source_cut);
                 self.emit_turn(&mut out, true);
+                // What is carried over started no later than where this turn stopped.
+                self.span = Span::new(if source_rest.trim().is_empty() { None } else { self.span.end_ms }, None);
                 self.target = target_rest.trim_start().to_string();
                 self.source = source_rest.trim_start().to_string();
                 self.turn += 1;
@@ -344,26 +398,68 @@ impl TextStream {
         }
         // Deltas carry their own leading space (" Welcome"), which is noise at a row's start.
         for (kind, text) in [("target", &self.target), ("source", &self.source)] {
-            out.push(Event { kind, id: id.clone(), text: text.trim_start().to_string(), done, ..Default::default() });
+            let span = if kind == "source" { self.span } else { Span::default() };
+            out.push(Event { kind, id: id.clone(), text: text.trim_start().to_string(), done, span, ..Default::default() });
         }
     }
+}
 
-    fn itemised(&mut self, v: &Value) -> Option<Event> {
-        let kind = match v.get("type")?.as_str()? {
-            "conversation.item.input_audio_transcription.delta" => "source",
-            "response.text.delta" | "response.audio_transcript.delta" => "target",
-            _ => {
-                let ev = classify(v)?;
-                if ev.done {
-                    self.partial.remove(&(ev.kind, ev.id.clone()));
-                }
-                return Some(ev);
-            }
+/// Volc, as seen live: per sentence, `*SubtitleStart` (with the audio span), word deltas in
+/// `*SubtitleResponse`, then `*SubtitleEnd` with the whole sentence — transcript first, then
+/// its translation. A translation's Start and End carry the same `start_time` as its
+/// transcript's, so that is the pairing key: a sentence that never gets translated leaves a
+/// row without one, instead of shifting every later translation onto the wrong row.
+#[derive(Default)]
+struct VolcSentences {
+    /// The sentence open on each side, `[source, target]`: its id and the words so far. Word
+    /// deltas carry no timing of their own, so they go to whichever sentence is open.
+    open: [(String, String); 2],
+}
+
+impl VolcSentences {
+    fn next(&mut self, name: &str, v: &Value) -> Vec<Event> {
+        let (kind, stage) = match name {
+            "SourceSubtitleStart" => ("source", 0),
+            "SourceSubtitleResponse" => ("source", 1),
+            "SourceSubtitleEnd" => ("source", 2),
+            "TranslationSubtitleStart" => ("target", 0),
+            "TranslationSubtitleResponse" => ("target", 1),
+            "TranslationSubtitleEnd" => ("target", 2),
+            _ => return Vec::new(),
         };
-        let id = v.get("item_id")?.as_str()?.to_string();
-        let text = self.partial.entry((kind, id.clone())).or_default();
-        text.push_str(v.get("delta")?.as_str()?);
-        Some(Event { kind, id, text: text.clone(), ..Default::default() })
+        let ms = |k: &str| v.get(k).and_then(Value::as_u64);
+        let span = Span::new(ms("start_time"), ms("end_time"));
+        let (id, words) = &mut self.open[usize::from(kind == "target")];
+        if stage != 1 {
+            *id = format!("v{}", ms("start_time").unwrap_or_default());
+            words.clear();
+        }
+        let id = id.clone();
+        let text = v.get("text").and_then(Value::as_str).unwrap_or_default();
+        match stage {
+            0 => {
+                let mut out = Vec::new();
+                if kind == "source" {
+                    // Transcript and translation share the id, so the link maps it to itself.
+                    out.push(Event { kind: "link", id: id.clone(), text: id.clone(), ..Default::default() });
+                }
+                out.push(Event { kind, id, span, ..Default::default() });
+                out
+            }
+            1 => {
+                words.push_str(text);
+                vec![Event { kind, id, text: words.trim_start().to_string(), ..Default::default() }]
+            }
+            _ => vec![Event {
+                kind,
+                id,
+                text: text.trim().to_string(),
+                lang: v.get("detected_language").and_then(Value::as_str).unwrap_or_default().to_string(),
+                done: true,
+                span,
+                ..Default::default()
+            }],
+        }
     }
 }
 
@@ -412,7 +508,6 @@ fn classify(v: &Value) -> Option<Event> {
             stash: field("stash"),
             lang: field("language"),
             id: field("item_id"),
-            done: false,
             ..Default::default()
         },
         "conversation.item.input_audio_transcription.completed" => Event {
@@ -439,8 +534,22 @@ fn classify(v: &Value) -> Option<Event> {
             done: true,
             ..Default::default()
         },
-        "input_audio_buffer.speech_started" => Event { kind: "speech", text: "start".into(), ..Default::default() },
-        "input_audio_buffer.speech_stopped" => Event { kind: "speech", text: "stop".into(), ..Default::default() },
+        // Carry the input item and the audio offset, so the turn gets its real place on the
+        // timeline rather than when its text happened to arrive.
+        "input_audio_buffer.speech_started" => Event {
+            kind: "speech",
+            text: "start".into(),
+            id: field("item_id"),
+            span: Span::new(v.get("audio_start_ms").and_then(Value::as_u64), None),
+            ..Default::default()
+        },
+        "input_audio_buffer.speech_stopped" => Event {
+            kind: "speech",
+            text: "stop".into(),
+            id: field("item_id"),
+            span: Span::new(None, v.get("audio_end_ms").and_then(Value::as_u64)),
+            ..Default::default()
+        },
         "session.created" | "session.updated" => Event { kind: "status", text: "connected".into(), ..Default::default() },
         "session.finished" | "session.closed" => Event { kind: "status", text: "closed".into(), ..Default::default() },
         // A server `error` frame (e.g. "previous turn is still processing") does not end
@@ -470,8 +579,7 @@ mod tests {
         let local = Event {
             kind: "source",
             text: "for MIT".into(),
-            start_ms: Some(1_000),
-            end_ms: Some(2_000),
+            span: Span { start_ms: Some(1_000), end_ms: Some(2_000) },
             ..Default::default()
         };
         let local = serde_json::to_value(local).unwrap();
@@ -690,28 +798,73 @@ mod tests {
         assert!(take_audio(&mut json!({ "setupComplete": {} })).is_none());
     }
 
-    #[test]
-    fn gemini_puts_the_key_in_the_url_and_the_others_in_a_header() {
-        let mut s: Settings = serde_json::from_value(json!({ "protocol": "gemini", "geminiKey": "AIza-test" })).unwrap();
-        let req = client_request(&s).unwrap();
-        assert!(req.uri().to_string().ends_with("BidiGenerateContent?key=AIza-test"));
-        assert!(req.headers().get("Authorization").is_none());
 
-        s.protocol = Protocol::Openai;
-        s.openai_key = "sk-test".into();
-        let req = client_request(&s).unwrap();
-        assert_eq!(req.headers()["Authorization"], "Bearer sk-test");
-        assert!(!req.uri().to_string().contains("key="));
+    #[test]
+    fn a_span_reaches_the_frontend_as_flat_start_and_end() {
+        let ev = Event { kind: "source", span: Span::new(Some(20), None), at_ms: Some(900), ..Default::default() };
+        let v = serde_json::to_value(ev).unwrap();
+        assert_eq!((v["startMs"].as_u64(), v["atMs"].as_u64()), (Some(20), Some(900)));
+        assert!(v.get("endMs").is_none() && v.get("span").is_none());
     }
 
-    /// Captured from a Tokyo workspace, which has no LiveTranslate models.
     #[test]
-    fn a_bare_code_and_message_frame_ends_the_session() {
-        let v = json!({ "code": "InvalidParameter", "message": "Model not exist.", "request_id": "x" });
-        assert_eq!(rejection(&v).unwrap(), "InvalidParameter: Model not exist.");
-        // Typed frames, including the recoverable `error` event, are not rejections.
-        assert!(rejection(&json!({ "type": "error", "error": { "message": "busy" } })).is_none());
-        assert!(rejection(&json!({ "type": "session.created" })).is_none());
+    fn speech_events_carry_their_item_and_audio_offset() {
+        let start = classify(&json!({ "type": "input_audio_buffer.speech_started", "item_id": "in1", "audio_start_ms": 1200 })).unwrap();
+        assert_eq!((start.id.as_str(), start.span), ("in1", Span::new(Some(1200), None)));
+        let stop = classify(&json!({ "type": "input_audio_buffer.speech_stopped", "item_id": "in1", "audio_end_ms": 3400 })).unwrap();
+        assert_eq!((stop.text.as_str(), stop.span.end_ms), ("stop", Some(3400)));
+    }
+
+    #[test]
+    fn openai_turns_are_timed_by_the_transcripts_elapsed_ms() {
+        let mut st = TextStream::default();
+        let at = |st: &mut TextStream, ty: &str, delta: &str, ms: u64| {
+            st.next(&json!({ "type": format!("session.{ty}_transcript.delta"), "delta": delta, "elapsed_ms": ms }))
+        };
+        at(&mut st, "input", "Good morning.", 400);
+        at(&mut st, "input", " Welcome", 1200);
+        let evs = at(&mut st, "output", "早上好。", 1400);
+        let src = evs.iter().find(|e| e.kind == "source" && e.done).unwrap();
+        assert_eq!(src.span, Span::new(Some(400), Some(1200)));
+        // The carried-over "Welcome" opens the next turn where this one stopped.
+        let next = at(&mut st, "input", " to", 1600);
+        let src = next.iter().find(|e| e.kind == "source").unwrap();
+        assert_eq!(src.span, Span::new(Some(1200), Some(1600)));
+    }
+
+    /// The frame order captured live from the AST endpoint (zh → en, s2t).
+    #[test]
+    fn volc_sentences_pair_by_start_time_and_carry_their_audio_span() {
+        let mut st = TextStream::default();
+        let f = |name: &str, text: &str, start: u64, end: u64| {
+            json!({ "type": format!("volc.{name}"), "text": text, "start_time": start, "end_time": end })
+        };
+        let open = st.next(&f("SourceSubtitleStart", "", 20, 1140));
+        assert_eq!((open[0].kind, open[0].id.as_str(), open[0].text.as_str()), ("link", "v20", "v20"));
+        assert_eq!(open[1].span, Span::new(Some(20), Some(1140)));
+        st.next(&f("SourceSubtitleResponse", "看", 0, 0));
+        let mid = st.next(&f("SourceSubtitleResponse", "外语", 0, 0));
+        assert_eq!((mid[0].text.as_str(), mid[0].done), ("看外语", false));
+        let end = st.next(&f("SourceSubtitleEnd", "看外语视频，", 20, 1140));
+        assert_eq!((end[0].text.as_str(), end[0].done, end[0].span.start_ms), ("看外语视频，", true, Some(20)));
+
+        st.next(&f("TranslationSubtitleStart", "", 20, 1140));
+        let word = st.next(&f("TranslationSubtitleResponse", "When", 0, 0));
+        assert_eq!((word[0].kind, word[0].id.as_str()), ("target", "v20"));
+        let done = st.next(&f("TranslationSubtitleEnd", "When watching foreign language videos, ", 20, 1140));
+        assert_eq!(done[0].text, "When watching foreign language videos,");
+        assert!(done[0].done);
+
+        // A sentence that is never translated (a cough, a filler) leaves its own row without a
+        // translation; the next translation still lands on its own transcript.
+        st.next(&f("SourceSubtitleStart", "", 1300, 1500));
+        st.next(&f("SourceSubtitleEnd", "嗯", 1300, 1500));
+        assert_eq!(st.next(&f("SourceSubtitleStart", "", 1600, 2580))[0].id, "v1600");
+        st.next(&f("SourceSubtitleEnd", "实时出中文字幕。", 1600, 2580));
+        st.next(&f("TranslationSubtitleStart", "", 1600, 2580));
+        let late = st.next(&f("TranslationSubtitleResponse", "Chinese", 0, 0));
+        assert_eq!(late[0].id, "v1600");
+        assert!(st.next(&json!({ "type": "volc.UsageResponse" })).is_empty());
     }
 
     #[test]

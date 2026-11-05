@@ -42,6 +42,13 @@ pub struct Entry {
     at: i64,
     source: String,
     target: String,
+    /// Place in the input audio, ms. Absent on lines written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end: Option<i64>,
+    /// The source fragments this sentence was assembled from, when the local ASR grouped
+    /// several segments into one. Absent on lines written before parts were recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     parts: Vec<SourcePart>,
 }
@@ -173,6 +180,11 @@ pub fn history_open_dir(app: AppHandle) -> Result<(), String> {
     app.opener().open_path(path.to_string_lossy().into_owned(), None::<&str>).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn history_dir(app: AppHandle) -> Result<String, String> {
+    Ok(dir(&app)?.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +214,11 @@ mod tests {
         let e: Entry = serde_json::from_str(entry).unwrap();
         assert_eq!(e.source, "你好");
         assert_eq!(serde_json::to_string(&e).unwrap(), entry);
+
+        let timed = r#"{"at":1758153806000,"source":"你好","target":"Hello","start":1200,"end":3400}"#;
+        let e: Entry = serde_json::from_str(timed).unwrap();
+        assert_eq!((e.start, e.end), (Some(1200), Some(3400)));
+        assert_eq!(serde_json::to_string(&e).unwrap(), timed);
     }
 
     #[test]
