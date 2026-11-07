@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>模型与价格 — ReaLingo</title>
+<meta name="description" content="ReaLingo 支持的同传模型：阿里云百炼 Qwen、OpenAI、Google Gemini、火山引擎豆包，语言、朗读、音色、价格一览。" />
+<link rel="icon" href="mark.png" />
+<script src="site.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="site.css" />
+<style>
+
+/* comparison: feature rows x model columns, first column pinned */
+.cmp table { min-width: 900px; }
+.cmp th, .cmp td { text-align: center; vertical-align: middle; }
+.cmp thead tr:first-child th:first-child, .cmp td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; font-weight: 600; color: var(--ink-1); min-width: 150px; }
+.cmp thead th { font-size: 15px; color: var(--ink-1); letter-spacing: 0; }
+.cmp thead th small { display: block; font-size: 12px; color: var(--ink-3); font-weight: 600; }
+.cmp thead th .tag { display: table; margin: 6px auto 0; }
+.cmp table { table-layout: fixed; }
+.cmp thead tr:first-child th:first-child { width: 150px; }
+/* vendor row: a label over a short rule spanning its models, gaps between vendors */
+.cmp thead th.vendor { font-size: 12px; font-weight: 700; color: var(--ink-3); border-bottom: 0; padding: 18px 10px 0; }
+.cmp thead th.vendor span { display: block; padding-bottom: 8px; border-bottom: 2px solid var(--hairline); }
+.cmp thead tr + tr th { padding-top: 12px; }
+.cmp tr.group td { background: var(--sunk); font-size: 12px; font-weight: 700; letter-spacing: .06em; color: var(--ink-3); text-align: left; padding: 8px 20px; }
+.cmp tr.group td:first-child { background: var(--sunk); }
+.cmp a.quota { color: inherit; text-decoration: underline dotted var(--ink-3); text-underline-offset: 4px; transition: color .2s; }
+.cmp a.quota::after { content: " ↗"; color: var(--ink-3); }
+.cmp a.quota:hover { color: var(--hero); text-decoration-color: currentColor; }
+.cmp td small { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+
+</style>
+</head>
+<body>
+
+<header>
+  <a class="home" href="./"><img src="mark.png" alt="" /><span class="name">ReaLingo</span></a>
+  <nav>
+    <a href="models.html" aria-current="page"><span class="zh">模型</span><span class="en">Models</span></a>
+    <a href="download.html"><span class="zh">下载</span><span class="en">Download</span></a>
+    <a class="hide-sm" href="./#faq"><span class="zh">常见问题</span><span class="en">FAQ</span></a>
+    <a class="hide-xs" href="https://github.com/noSugarK/ReaLingo">GitHub</a>
+    <button id="theme" type="button" aria-label="Toggle theme" title="Theme"><svg class="moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+    <button id="lang" type="button"><span class="zh">English</span><span class="en">中文</span></button>
+  </nav>
+</header>
+
+<div class="page-head">
+  <div class="wrap"><div class="head">
+    <div class="kicker"><span class="zh">模型</span><span class="en">Models</span></div>
+    <h2 class="h2"><span class="zh">模型与价格</span><span class="en">Models &amp; pricing</span></h2>
+    <p class="lead"><span class="zh">ReaLingo 免费，翻译用你自己的 API Key，按厂商价格计费。</span><span class="en">ReaLingo is free. Translation uses your own API key, billed at the vendor's rates.</span></p>
+  </div></div>
+</div>
+
+<!-- ======================= comparison ======================= -->
+<section>
+  <div class="wrap">
+    <div class="scroll-x cmp"><table id="cmp"></table></div>
+    <p class="note"><span class="zh"><a href="https://university.aliyun.com/">阿里云高校学生优惠 ↗</a></span><span class="en"><a href="https://university.aliyun.com/">Alibaba Cloud university student offer ↗</a></span></p>
+    <p class="note"><span class="zh">价格为 <b id="checked"></b> 查询的官方价目（不含促销），以控制台为准。每分钟价按官方音频 token 单价估算（Qwen 输入每秒 7 个、输出 12.5 个；豆包输入 6.25 个、输出 25 个），OpenAI 和 Gemini 取官方每分钟价；译文文本另计，通常远小于音频部分。免费额度的数量、期限和开通方式常有变动，以各家控制台实际显示为准。</span><span class="en">Official list prices checked <b id="checked-en"></b>, promotions excluded; the console has the final word. Per-minute figures convert the audio token rates (Qwen 7 tokens/s in, 12.5 out; Doubao 6.25 in, 25 out); OpenAI and Gemini publish per-minute prices. Translated text is billed on top and is usually far smaller than the audio. Free quotas change often in amount, duration and how to activate them; what the vendor console shows is what applies.</span></p>
+  </div>
+</section>
+
+<!-- ======================= languages per model ======================= -->
+<section id="languages" class="flush">
+  <div class="wrap">
+    <div class="head">
+      <div class="kicker"><span class="zh">语言</span><span class="en">Languages</span></div>
+      <h2 class="h2"><span class="zh">每个模型支持哪些语言</span><span class="en">Languages by model</span></h2>
+      <p class="lead"><span class="zh">切换接口，看看各家能译出哪些语言，带喇叭图标的还能朗读。除了豆包要手动指定源语言，其余都能自动检测。</span><span class="en">Switch between the APIs to see what each translates into — the ones with a speaker can be read aloud. All but Doubao detect the source language for you.</span></p>
+    </div>
+    <div class="seg apis" id="apis"><button data-v="qwen" class="on">Qwen3.5 / 3.8</button><button data-v="gemini">Gemini</button><button data-v="openai">OpenAI</button><button data-v="volc">豆包 / Doubao</button></div>
+    <div class="langbar">
+      <input id="q" type="search" placeholder="搜索语言 / Search…" autocomplete="off" />
+      <span class="count" id="count"></span>
+      <span class="legend count"><svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" fill="currentColor"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="zh">可朗读</span><span class="en">can be spoken</span></span>
+    </div>
+    <div class="langs" id="langs"></div>
+  </div>
+</section>
+
+<div class="wrap">
+  <footer>
+    <span class="zh">Tauri 2 + Rust 内核，Vue 3 前端</span><span class="en">Rust core on Tauri 2, Vue 3 front end</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/noSugarK/ReaLingo/blob/main/LICENSE">MIT</a>
+    <a href="https://github.com/noSugarK">noSugarK</a>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var zh = function () { return document.documentElement.lang === "zh"; };
+  var t = function (a, b) { return zh() ? a : b; };
+
+  var saved = null;
+  try { saved = localStorage.getItem("realingo-lang"); } catch (e) {}
+  document.documentElement.lang = saved || ((navigator.language || "").toLowerCase().indexOf("zh") === 0 ? "zh" : "en");
+  $("#lang").addEventListener("click", function () {
+    document.documentElement.lang = zh() ? "en" : "zh";
+    try { localStorage.setItem("realingo-lang", document.documentElement.lang); } catch (e) {}
+    render();
+  });
+
+  /* ---- one row per model: everything on this page reads from here ----
+     Mirrors PROTOCOLS / PRESETS in src/languages.ts; prices from the README's API comparison.
+     price: [listening per minute, reading aloud on top] as [zh, en] pairs. */
+  var CHECKED = "2026-11";
+  var QWEN_PRICE = "https://www.alibabacloud.com/help/en/model-studio/model-pricing";
+  var QWEN_MIN = [["约 $0.003", "~$0.003"], ["朗读另约 $0.023", "Read aloud ~$0.023 more"]], NONE = ["无", "None"];
+  var MODELS = [
+    { key: "qwen38", vendor: ["阿里云百炼", "Alibaba Model Studio"], name: "Qwen3.8", id: "qwen3.8-livetranslate-flash-realtime",
+      langs: 60, speak: 29, source: "auto", voices: ["47 种预置", "47 presets"], twoWay: false,
+      price: QWEN_MIN, free: ["北京需手动开通；新加坡自动发放", "Beijing: activate it first; Singapore: granted automatically"],
+      freeUrl: "https://bailian.console.aliyun.com/cn-beijing/costing-balance/free-quota?model=livetranslate",
+      priceUrl: QWEN_PRICE, tags: [["默认", "Default", "blue"]] },
+    { key: "qwen35", vendor: ["阿里云百炼", "Alibaba Model Studio"], name: "Qwen3.5", id: "qwen3.5-livetranslate-flash-realtime",
+      langs: 60, speak: 29, source: "either", voices: ["47 种预置", "47 presets"], twoWay: false,
+      price: QWEN_MIN, free: ["已停发新用户额度", "No longer for new users"], freeNote: ["2026-10-29 起", "Since 2026-10-29"], priceUrl: QWEN_PRICE, tags: [] },
+    { key: "openai", vendor: ["OpenAI", "OpenAI"], name: "GPT-Realtime-Translate", id: "gpt-realtime-translate",
+      langs: 13, speak: 13, source: "auto", voices: ["服务端决定", "Server's voice"], twoWay: false,
+      price: [["$0.034", "$0.034"], ["含朗读，按输入时长计", "Speech included, by input length"]], free: NONE,
+      priceUrl: "https://developers.openai.com/api/docs/pricing", tags: [] },
+    { key: "gemini", vendor: ["Google", "Google"], name: "Gemini 3.5 Live Translate", id: "gemini-3.5-live-translate-preview",
+      langs: 54, speak: 54, source: "auto", voices: ["服务端决定", "Server's voice"], twoWay: false,
+      price: [["约 $0.0053", "~$0.0053"], ["朗读另约 $0.0315", "Read aloud ~$0.0315 more"]], free: ["免费层可用，限额以 AI Studio 为准", "Free tier, limits as shown in AI Studio"],
+      freeUrl: "https://aistudio.google.com/rate-limit",
+      priceUrl: "https://aistudio.google.com/docs/pricing", tags: [["预览版", "Preview", ""]] },
+    { key: "volc", vendor: ["火山引擎", "Volcengine"], name: ["豆包同声传译 2.0", "Doubao SI 2.0"], id: "doubao-ast-2.0",
+      langs: 20, speak: 8, source: "named", voices: ["复刻说话人 / 2 种预置", "Cloned speaker / 2 presets"], twoWay: true,
+      price: [["约 ¥0.03", "~¥0.03"], ["朗读另约 ¥0.45", "Read aloud ~¥0.45 more"]], free: ["100 万 token（手动开通后）", "1M tokens (after activation)"],
+      freeUrl: "https://console.volcengine.com/speech/new/setting/activate",
+      priceUrl: "https://docs.volcengine.com/docs/doubao-voice/billing-instructions?lang=zh", tags: [] }
+  ];
+  var nm = function (m) { return typeof m.name === "string" ? m.name : t(m.name[0], m.name[1]); };
+  var price = function (m) {
+    return "<b>" + t(m.price[0][0], m.price[0][1]) + "</b>" + (m.price[1] ? "<small>" + t(m.price[1][0], m.price[1][1]) + "</small>" : "") +
+      '<small><a href="' + m.priceUrl + '" target="_blank" rel="noopener">' + t("官方价格 ↗", "Pricing ↗") + "</a></small>";
+  };
+  var SOURCE = { auto: ["自动识别", "Auto-detect"], either: ["自动 / 指定", "Auto or pick"], named: ["需指定", "Must pick"] };
+
+  function renderTable() {
+    var yes = function (v) { return v ? '<span class="y" aria-label="yes"></span>' : '<span class="n" aria-label="no"></span>'; };
+    var ROWS = [
+      [t("每分钟（估算）", "Per minute (est.)"), price],
+      [t("免费额度", "Free quota"), function (m) {
+        var s = t(m.free[0], m.free[1]);
+        // The text itself links to the vendor's quota page, so the cell stays one line of meaning.
+        if (m.freeUrl) s = '<a class="quota" href="' + m.freeUrl + '" target="_blank" rel="noopener">' + s + "</a>";
+        return s + (m.freeNote ? "<small>" + t(m.freeNote[0], m.freeNote[1]) + "</small>" : "");
+      }],
+      [t("目标语言", "Target languages"), function (m) { return "<b>" + m.langs + "</b>"; }],
+      [t("可朗读语言", "Spoken aloud"), function (m) { return m.speak ? "<b>" + m.speak + "</b>" : yes(false); }],
+      [t("源语言", "Source language"), function (m) { return t(SOURCE[m.source][0], SOURCE[m.source][1]); }],
+      [t("中英双向", "Zh ⇄ En in one session"), function (m) { return yes(m.twoWay); }],
+      [t("音色", "Voices"), function (m) { return t(m.voices[0], m.voices[1]); }]
+    ];
+    // Row 1: one cell per vendor spanning its adjacent models; row 2: the models.
+    var vendors = "";
+    MODELS.forEach(function (m, i) {
+      if (i && MODELS[i - 1].vendor[0] === m.vendor[0]) return;
+      for (var n = 1; MODELS[i + n] && MODELS[i + n].vendor[0] === m.vendor[0]; n++);
+      vendors += '<th class="vendor" colspan="' + n + '"><span>' + t(m.vendor[0], m.vendor[1]) + "</span></th>";
+    });
+    var head = '<thead><tr><th rowspan="2"></th>' + vendors + "</tr><tr>" + MODELS.map(function (m) {
+      return "<th>" + nm(m) +
+        m.tags.map(function (g) { return '<span class="tag ' + g[2] + '">' + t(g[0], g[1]) + "</span>"; }).join("") + "</th>";
+    }).join("") + "</tr></thead>";
+    var body = ROWS.map(function (r) { return "<tr><td>" + r[0] + "</td>" + MODELS.map(function (m) { return "<td>" + r[1](m) + "</td>"; }).join("") + "</tr>"; }).join("");
+    $("#cmp").innerHTML = head + "<tbody>" + body + "</tbody>";
+    $("#checked").textContent = $("#checked-en").textContent = CHECKED;
+  }
+
+  function render() { renderTable(); }
+  render();
+})();
+</script>
+<script src="langs.js"></script>
+</body>
+</html>

@@ -168,9 +168,9 @@ watch(voiceList, (now, was) => {
 }, { immediate: true });
 // How the source language is set (see PROTOCOLS): some services always detect it. Local
 // mode is not one of them — there the user picks the language Whisper listens for.
-const sourceMode = computed(() => PROTOCOLS[settings.protocol].source);
+const sourceMode = computed(() => settings.mode === "local" ? "either" : PROTOCOLS[settings.protocol].source);
 watch(sourceMode, (mode) => {
-  if (mode === "detected" && settings.mode === "remote") settings.sourceLang = "auto";
+  if (mode === "detected") settings.sourceLang = "auto";
 }, { immediate: true });
 // Why speaking cannot happen with the current choices, if it cannot. Linux has no way to
 // leave our own playback out of a monitor source, so system audio would hear itself.
@@ -427,10 +427,9 @@ watch([lines, current], async () => {
         </svg>
       </button>
       <button class="btn-icon" :aria-label="t('settings')" @click="showSettings = true">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M2 4.5h5M10 4.5h4M2 11.5h4M9 11.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-          <circle cx="8.6" cy="4.5" r="1.9" stroke="currentColor" stroke-width="1.6" />
-          <circle cx="7.4" cy="11.5" r="1.9" stroke="currentColor" stroke-width="1.6" />
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+          <circle cx="12" cy="12" r="3" />
         </svg>
       </button>
       <div class="win-buttons">
@@ -567,10 +566,13 @@ watch([lines, current], async () => {
                     {{ langName(detectedLang, locale) }}
                   </em>
                 </span>
-                <Picker v-model="settings.sourceLang" :options="sourceLangOptions" :disabled="isRunning()" />
+                <!-- Detect-only services take no source language: nothing to pick, so no picker. -->
+                <div v-if="sourceMode === 'detected'" class="fixed-lang">{{ langName("auto", locale) }}</div>
+                <Picker v-else v-model="settings.sourceLang" :options="sourceLangOptions" :disabled="isRunning()" />
               </div>
               <button
-                v-if="!transcribingOnly"
+              <button
+                v-if="!transcribingOnly && sourceMode !== 'detected'"
                 class="btn-icon swap"
                 :aria-label="t('swap')"
                 :disabled="settings.sourceLang === 'auto' || isRunning()"
@@ -865,6 +867,8 @@ watch([lines, current], async () => {
 
 .langs { display: flex; align-items: flex-end; gap: 8px; }
 .swap { margin-bottom: 2px; }
+/* Same height as a Picker so the row stays aligned, but no field chrome: it is not a control. */
+.fixed-lang { height: 38px; display: flex; align-items: center; font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
 .swap:disabled { opacity: 0.3; cursor: not-allowed; }
 
 .meter { height: 6px; border-radius: 3px; background: var(--shade); overflow: hidden; }
