@@ -283,6 +283,23 @@ fn take_audio(v: &mut Value) -> Option<Vec<u8>> {
     (!pcm.is_empty()).then_some(pcm)
 }
 
+/// Which transcript form the server is speaking.
+///
+/// A server may send both: AetherMesh sends its own bare stream alongside the canonical
+/// OpenAI sequence, with the same sentence in both. Filing both files every sentence
+/// twice — once without its translation, once with it — so the form is picked once and
+/// the other ignored.
+#[derive(PartialEq, Eq, Clone, Copy, Default)]
+enum TranscriptForm {
+    /// Nothing transcript-shaped has arrived yet.
+    #[default]
+    Unknown,
+    /// Bare append-only streams, no turns and no ids.
+    Bare,
+    /// The canonical OpenAI sequence: item-keyed deltas and completed transcriptions.
+    Itemised,
+}
+
 /// Turns server frames into normalised events. Each protocol shapes its text differently, so
 /// each keeps its own state here; `next` only routes a frame to the one it belongs to.
 #[derive(Default)]
@@ -293,6 +310,7 @@ struct TextStream {
     continuous: Continuous,
     /// Volc.
     volc: VolcSentences,
+    form: TranscriptForm,
 }
 
 /// Past this many characters a translation with no sentence end is cut anyway, so a speaker
@@ -308,6 +326,7 @@ impl TextStream {
         // either or both alongside the audio.
         if let Some(content) = v.get("serverContent") {
             let mut out = Vec::new();
+            self.form = TranscriptForm::Bare;
             for (field, is_target) in [("inputTranscription", false), ("outputTranscription", true)] {
                 if let Some(text) = content.pointer(&format!("/{field}/text")).and_then(Value::as_str) {
                     out.extend(self.continuous.push(is_target, text, None));
@@ -317,6 +336,11 @@ impl TextStream {
         }
         match v.get("type").and_then(Value::as_str) {
             Some(ty @ ("session.input_transcript.delta" | "session.output_transcript.delta")) => {
+                // The bare stream has the first word on a server that sends both.
+                if self.form == TranscriptForm::Itemised {
+                    return Vec::new();
+                }
+                self.form = TranscriptForm::Bare;
                 let delta = v.get("delta").and_then(Value::as_str).unwrap_or_default();
                 // Only the transcript's `elapsed_ms` places the row in the input audio.
                 let is_target = ty == "session.output_transcript.delta";
@@ -333,12 +357,28 @@ impl TextStream {
             "response.text.delta" | "response.audio_transcript.delta" => "target",
             _ => {
                 let ev = classify(v)?;
+                // The canonical sequence says the same thing the bare stream already said:
+                // the bare stream had the first word, so this is the echo. Events that are
+                // not transcript-shaped — the session's status, its warnings, the links
+                // between items — are the server's own bookkeeping and always wanted.
+                if matches!(ev.kind, "source" | "target") {
+                    if self.form == TranscriptForm::Bare {
+                        return None;
+                    }
+                    self.form = TranscriptForm::Itemised;
+                }
                 if ev.done {
                     self.partial.remove(&(ev.kind, ev.id.clone()));
                 }
                 return Some(ev);
             }
         };
+        // The canonical sequence says the same thing the bare stream already said: the
+        // bare stream had the first word, so this is the echo.
+        if self.form == TranscriptForm::Bare {
+            return None;
+        }
+        self.form = TranscriptForm::Itemised;
         let id = v.get("item_id")?.as_str()?.to_string();
         let text = self.partial.entry((kind, id.clone())).or_default();
         text.push_str(v.get("delta")?.as_str()?);
@@ -908,5 +948,90 @@ mod tests {
         let event = Event { kind: "status", text: "connected".into(), asr_model: Some("Qwen/Qwen3-ASR-1.7B".into()), ..Default::default() };
         let value = serde_json::to_value(&event).unwrap();
         assert_eq!(value["asrModel"], "Qwen/Qwen3-ASR-1.7B");
+    }
+
+    #[test]
+    fn a_server_sending_both_transcript_forms_fills_each_turn_once() {
+        // AetherMesh sends its own bare stream and the canonical OpenAI sequence, with the
+        // same sentence in both. Filing both files every sentence twice: once without its
+        // translation and once with it.
+        let mut st = TextStream::default();
+        let mut out = st.next(&json!({ "type": "session.input_transcript.delta", "delta": "Who?" }));
+        out.extend(st.next(&json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item_1",
+            "transcript": "Who?",
+        })));
+        let sources: Vec<&str> = out
+            .iter()
+            .filter(|e| e.kind == "source")
+            .map(|e| e.text.as_str())
+            .collect();
+        assert_eq!(sources, vec!["Who?"], "the same sentence must not be filed twice");
+    }
+
+    #[test]
+    fn the_canonical_form_alone_still_files_the_transcript() {
+        // The real OpenAI endpoint sends only the canonical sequence.
+        let mut st = TextStream::default();
+        let out = st.next(&json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item_1",
+            "transcript": "Who?",
+        }));
+        let sources: Vec<&str> = out
+            .iter()
+            .filter(|e| e.kind == "source")
+            .map(|e| e.text.as_str())
+            .collect();
+        assert_eq!(sources, vec!["Who?"]);
+    }
+
+    #[test]
+    fn the_bare_form_alone_still_files_the_transcript() {
+        let mut st = TextStream::default();
+        let out = st.next(&json!({ "type": "session.input_transcript.delta", "delta": "Who?" }));
+        let sources: Vec<&str> = out
+            .iter()
+            .filter(|e| e.kind == "source")
+            .map(|e| e.text.as_str())
+            .collect();
+        assert_eq!(sources, vec!["Who?"]);
+    }
+
+    #[test]
+    fn the_real_aethermesh_stream_files_each_segment_once() {
+        // The frames as the server actually sends them: its bare stream and the canonical
+        // OpenAI sequence, interleaved, saying the same thing twice.
+        let mut st = TextStream::default();
+        let mut sources: Vec<(String, bool)> = Vec::new();
+        let frames = vec![
+            json!({ "type": "session.input_transcript.delta", "delta": "Who?", "seg": 1, "is_final": false }),
+            json!({ "type": "conversation.item.created", "item": { "id": "item_1", "role": "user", "type": "message", "content": [{ "type": "input_audio" }] } }),
+            json!({ "type": "conversation.item.input_audio_transcription.completed", "item_id": "item_1", "transcript": "Who?" }),
+            json!({ "type": "session.output_transcript.delta", "delta": "谁？\n", "seg": 1, "is_final": false }),
+            json!({ "type": "conversation.item.created", "item": { "id": "msg_1", "role": "assistant", "type": "message", "content": [] }, "previous_item_id": "item_1" }),
+            json!({ "type": "response.output_text.delta", "item_id": "msg_1", "delta": "谁？" }),
+            json!({ "type": "session.input_transcript.delta", "delta": "To you and I.", "seg": 2, "is_final": false }),
+            json!({ "type": "conversation.item.input_audio_transcription.completed", "item_id": "item_2", "transcript": "To you and I." }),
+            json!({ "type": "session.output_transcript.delta", "delta": "对你和我来说。\n", "seg": 2, "is_final": false }),
+            json!({ " type": "response.output_text.delta", "item_id": "msg_2", "delta": "对你和我来说。" }),
+        ];
+        for f in frames {
+            for ev in st.next(&f) {
+                if ev.kind == "source" {
+                    sources.push((ev.id, ev.done));
+                }
+            }
+        }
+        // Every source belongs to the bare stream's turn: the canonical echo must not file
+        // the sentence a second time, under an id of its own.
+        assert!(
+            sources.iter().all(|(id, _)| id.starts_with("oa")),
+            "the canonical echo must not file the sentence again: {sources:?}"
+        );
+        // One finished source per segment: the segment is filed once.
+        let finished = sources.iter().filter(|(_, done)| *done).count();
+        assert_eq!(finished, 2, "two segments, two finished sources: {sources:?}");
     }
 }
