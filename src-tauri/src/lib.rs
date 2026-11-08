@@ -21,7 +21,7 @@ use audio::DeviceInfo;
 use config::{ExecutionMode, Protocol, Settings};
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -32,7 +32,7 @@ pub struct AppState {
     running: Mutex<Option<Arc<AtomicBool>>>,
     capture: Mutex<Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>>,
     exiting: AtomicBool,
-    level: Arc<AtomicU32>,
+    level: audio::InputLevel,
     #[cfg(any(target_os = "macos", windows))]
     local_models: Arc<Mutex<local::LocalModelCache>>,
 }
@@ -137,8 +137,8 @@ fn default_device(loopback: bool) -> Option<String> {
 }
 
 #[tauri::command]
-fn input_level(state: State<AppState>) -> f32 {
-    audio::read_level(&state.level)
+fn input_level(state: State<AppState>) -> audio::InputLevels {
+    audio::read_levels(&state.level)
 }
 
 fn recordings_dir(app: AppHandle) -> Result<String, String> {
@@ -366,7 +366,7 @@ fn halt(state: &State<AppState>) {
         stop.store(true, Ordering::Relaxed);
         join_capture(state, &stop);
     }
-    state.level.store(0f32.to_bits(), Ordering::Relaxed);
+    state.level.reset();
 }
 
 fn join_capture(state: &AppState, stop: &Arc<AtomicBool>) {
@@ -386,7 +386,7 @@ pub(crate) fn request_exit(app: &AppHandle) {
     if let Some(stop) = stop {
         stop.store(true, Ordering::Relaxed);
         join_capture(&state, &stop);
-        state.level.store(0f32.to_bits(), Ordering::Relaxed);
+        state.level.reset();
     } else {
         finish_shutdown(app, &state);
     }

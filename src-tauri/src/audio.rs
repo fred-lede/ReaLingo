@@ -22,6 +22,7 @@
 //! Linux has no such filter, so the frontend does not offer speaking with system audio there.
 
 use anyhow::{anyhow, Result};
+use serde::Serialize;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -148,7 +149,7 @@ pub fn start(
     id: &str,
     rate: u32,
     tx: Sender<Vec<i16>>,
-    level: Arc<AtomicU32>,
+    level: InputLevel,
     dropped: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     exclude_self: bool,
@@ -235,7 +236,7 @@ fn is_default_output(id: &str) -> bool {
         .is_some_and(|d| d.to_string() == target)
 }
 
-fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropped: Arc<AtomicU64>, recording_path: Option<PathBuf>) -> Result<(cpal::Stream, Option<crate::recording::Finish>)> {
+fn build(id: &str, rate: u32, tx: Sender<Vec<i16>>, level: InputLevel, dropped: Arc<AtomicU64>, recording_path: Option<PathBuf>) -> Result<(cpal::Stream, Option<crate::recording::Finish>)> {
     let (device, supported) = find(id)?;
     let sample_format = supported.sample_format();
     let channels = supported.channels() as usize;
@@ -293,6 +294,48 @@ where
 }
 
 /// Interleaved device frames -> mono -> model rate -> 100 ms chunks on the channel.
+/// The input level in two forms: the peak, which the meter shows, and a smoothed RMS,
+/// which says whether the input is loud enough to be heard at all.
+///
+/// The peak says how loud the loudest moment was; the RMS says how loud the input
+/// actually is. A microphone at a low gain has a peak all over the place and an RMS
+/// far below what a remote service needs — that is the one worth warning about.
+#[derive(Clone, Default)]
+pub struct InputLevel {
+    peak: Arc<AtomicU32>,
+    rms: Arc<AtomicU32>,
+}
+
+impl InputLevel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The peak of the latest chunk, in 0..1.
+    pub fn store_peak(&self, peak: f32) {
+        self.peak.store(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The level of the input, smoothed so the meter and the warning do not flicker.
+    pub fn store_rms(&self, rms: f32) {
+        let smoothed = self.rms() * 0.8 + rms * 0.2;
+        self.rms.store(smoothed.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn peak(&self) -> f32 {
+        f32::from_bits(self.peak.load(Ordering::Relaxed))
+    }
+
+    pub fn rms(&self) -> f32 {
+        f32::from_bits(self.rms.load(Ordering::Relaxed))
+    }
+
+    pub fn reset(&self) {
+        self.store_peak(0.0);
+        self.store_rms(0.0);
+    }
+}
+
 pub(crate) struct Pipe {
     resampler: Resampler,
     mono: Vec<f32>,
@@ -300,12 +343,12 @@ pub(crate) struct Pipe {
     chunk: usize,
     channels: usize,
     tx: Sender<Vec<i16>>,
-    level: Arc<AtomicU32>,
+    level: InputLevel,
     dropped: Arc<AtomicU64>,
 }
 
 impl Pipe {
-    pub(crate) fn new(in_rate: u32, channels: usize, out_rate: u32, tx: Sender<Vec<i16>>, level: Arc<AtomicU32>, dropped: Arc<AtomicU64>) -> Self {
+    pub(crate) fn new(in_rate: u32, channels: usize, out_rate: u32, tx: Sender<Vec<i16>>, level: InputLevel, dropped: Arc<AtomicU64>) -> Self {
         Self {
             resampler: Resampler::new(in_rate, out_rate),
             mono: Vec::new(),
@@ -323,7 +366,10 @@ impl Pipe {
         downmix(frames, self.channels, &mut self.mono);
 
         let peak = self.mono.iter().fold(0f32, |m, s| m.max(s.abs()));
-        self.level.store(peak.to_bits(), Ordering::Relaxed);
+        self.level.store_peak(peak);
+        // The RMS of what is actually being sent, not of the loudest instant in it.
+        let mean = self.mono.iter().map(|s| s * s).sum::<f32>() / self.mono.len().max(1) as f32;
+        self.level.store_rms(mean.sqrt());
 
         self.resampler.push(&self.mono, &mut self.pcm);
         while self.pcm.len() >= self.chunk {
@@ -339,8 +385,16 @@ impl Pipe {
     }
 }
 
-pub fn read_level(level: &AtomicU32) -> f32 {
-    f32::from_bits(level.load(Ordering::Relaxed))
+/// The peak and the smoothed RMS of the input, for the meter and the low-level warning.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputLevels {
+    pub peak: f32,
+    pub rms: f32,
+}
+
+pub fn read_levels(level: &InputLevel) -> InputLevels {
+    InputLevels { peak: level.peak(), rms: level.rms() }
 }
 
 #[cfg(test)]
@@ -351,9 +405,42 @@ mod tests {
     fn full_audio_channel_counts_dropped_chunks() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let dropped = Arc::new(AtomicU64::new(0));
-        let mut pipe = Pipe::new(16_000, 1, 16_000, tx, Arc::new(AtomicU32::new(0)), dropped.clone());
+        let mut pipe = Pipe::new(16_000, 1, 16_000, tx, InputLevel::new(), dropped.clone());
         pipe.feed(&vec![0.25; 3_200]);
         assert_eq!(rx.try_recv().unwrap().len(), 1_600);
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn the_smoothed_rms_settles_on_the_input_level() {
+        let level = InputLevel::new();
+        assert_eq!(level.rms(), 0.0);
+        level.store_rms(0.1);
+        assert!(level.rms() > 0.0 && level.rms() < 0.1, "the first reading is smoothed, not taken raw");
+        for _ in 0..100 {
+            level.store_rms(0.1);
+        }
+        assert!((level.rms() - 0.1).abs() < 0.01, "the smoothed rms settles on the input level");
+    }
+
+    #[test]
+    fn the_peak_is_reported_as_it_is() {
+        let level = InputLevel::new();
+        level.store_peak(0.42);
+        assert!((level.peak() - 0.42).abs() < 0.0001);
+    }
+
+    #[test]
+    fn a_quiet_input_reports_a_quiet_rms() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let level = InputLevel::new();
+        let mut pipe = Pipe::new(16_000, 1, 16_000, tx, level.clone(), Arc::new(AtomicU64::new(0)));
+        // A microphone at a low gain: about 0.0067 rms, well under what a remote
+        // service needs to hear it.
+        let amplitude = 0.0067_f32;
+        for _ in 0..20 {
+            pipe.feed(&vec![amplitude; 1_600]);
+        }
+        assert!(level.rms() > 0.004 && level.rms() < 0.01, "rms was {}", level.rms());
     }
 }

@@ -18,6 +18,7 @@ import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOI
 import { check, checkUpdateAtStartup, openHome } from "./update";
 import type { BackendStatus } from "./local-diagnostics";
 import { activeKey, settings, initSettings, resolvedTheme, SUB_SIZE, type SubAlign, type SubMode, type SubtitleStyle } from "./store";
+import { isInputTooQuiet } from "./input-level";
 import {
   current,
   detectedLang,
@@ -52,6 +53,8 @@ const recordingState = ref<"idle" | "recording" | "saved" | "error">("idle");
 const recordingFile = ref("");
 const recordingError = ref("");
 const level = ref(0);
+/** The smoothed RMS of the input: what the remote service will actually hear. */
+const inputRms = ref(0);
 /** What the host OS can do; decides whether the "system audio" tab has real devices. */
 const caps = ref({ os: "", loopback: true });
 const streamEl = ref<HTMLElement | null>(null);
@@ -102,6 +105,11 @@ const statusKey = computed(() => {
   if (status.value === "connected") return speaking.value ? ("statusListening" as const) : ("statusConnected" as const);
   return "statusIdle" as const;
 });
+
+/** A quiet microphone leaves a remote service with nothing to hear, and no way to say so. */
+const inputTooQuiet = computed(() =>
+  isInputTooQuiet(inputRms.value, { running: isRunning(), remote: settings.mode === "remote" })
+);
 
 async function refreshDevices() {
   caps.value = await invoke("platform");
@@ -359,7 +367,14 @@ onMounted(async () => {
   await showOverlay(settings.sub.show);
   await syncTray();
   levelTimer = window.setInterval(async () => {
-    level.value = isRunning() ? await invoke<number>("input_level") : 0;
+    if (!isRunning()) {
+      level.value = 0;
+      inputRms.value = 0;
+      return;
+    }
+    const levels = await invoke<{ peak: number; rms: number }>("input_level");
+    level.value = levels.peak;
+    inputRms.value = levels.rms;
   }, 60);
 });
 
@@ -490,6 +505,7 @@ watch([lines, current], async () => {
               <div class="meter" :title="t('level')">
                 <i :style="{ transform: `scaleX(${Math.min(1, level * 1.6)})` }" />
               </div>
+              <p v-if="inputTooQuiet" class="hint">{{ t("inputTooQuiet") }}</p>
               <template v-if="recordableSource">
                 <label class="line">
                   <span>{{ t(sourceKind === 'mic' ? "recordMic" : "recordSystem") }}</span>

@@ -19,7 +19,7 @@
 use anyhow::{anyhow, Result};
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -125,7 +125,7 @@ pub fn start(
     source: &str,
     rate: u32,
     tx: Sender<Vec<i16>>,
-    level: Arc<AtomicU32>,
+    level: crate::audio::InputLevel,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut child = Command::new("parec")
@@ -161,13 +161,16 @@ pub fn start(
                 .collect();
 
             let peak = pcm.iter().fold(0f32, |m, &s| m.max((s as f32 / 32768.0).abs()));
-            level.store(peak.to_bits(), Ordering::Relaxed);
+            level.store_peak(peak);
+            let mean = pcm.iter().map(|&s| (s as f32 / 32768.0).powi(2)).sum::<f32>()
+                / pcm.len().max(1) as f32;
+            level.store_rms(mean.sqrt());
 
             // Never block: a backed-up uplink drops audio rather than stalling the reader.
             let _ = tx.try_send(pcm);
         }
         reap(&mut child);
-        level.store(0f32.to_bits(), Ordering::Relaxed);
+        level.reset();
     });
 
     Ok(())
