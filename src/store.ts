@@ -99,6 +99,8 @@ export interface Settings {
   /** Legacy hotwords are migrated into glossary when saved settings load. */
   hotwords: Record<string, string>;
   glossary: GlossaryEntry[];
+  /** The ASR model the server reported at the last connection. Server-side choice. */
+  lastServerAsr: string;
   /** Read the translation aloud. Only takes effect where `canSpeak` allows it. */
   speak: boolean;
   voice: string;
@@ -135,6 +137,7 @@ export const settings = reactive<Settings>({
   recordFormat: "wav",
   hotwords: {},
   glossary: [],
+  lastServerAsr: "",
   speak: false,
   voice: "Tina",
   twoWay: false,

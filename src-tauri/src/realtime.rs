@@ -59,6 +59,10 @@ pub struct Event {
     /// that give no timing. Late by the model's latency, but on the audio's clock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at_ms: Option<u64>,
+    /// The ASR model the server is transcribing with, when it says. One model is loaded
+    /// server-side and the client cannot choose it, so this is a report, not a request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_model: Option<String>,
 }
 
 /// A stretch of the input audio, ms from its start. Either end may be unknown. Flattened
@@ -550,7 +554,16 @@ fn classify(v: &Value) -> Option<Event> {
             span: Span::new(None, v.get("audio_end_ms").and_then(Value::as_u64)),
             ..Default::default()
         },
-        "session.created" | "session.updated" => Event { kind: "status", text: "connected".into(), ..Default::default() },
+        "session.created" | "session.updated" => Event {
+            kind: "status",
+            text: "connected".into(),
+            asr_model: v
+                .pointer("/session/asr/model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.is_empty())
+                .map(str::to_string),
+            ..Default::default()
+        },
         "session.finished" | "session.closed" => Event { kind: "status", text: "closed".into(), ..Default::default() },
         // A server `error` frame (e.g. "previous turn is still processing") does not end
         // the session — surfacing it as a fatal error would wrongly stop the stream.
@@ -871,5 +884,29 @@ mod tests {
     fn unknown_events_are_ignored() {
         assert!(classify(&json!({ "type": "response.output_item.added" })).is_none());
         assert!(classify(&json!({ "no_type": 1 })).is_none());
+    }
+
+    #[test]
+    fn session_created_reports_the_server_asr_model() {
+        let event = classify(&json!({
+            "type": "session.created",
+            "session": { "model": "translategemma:12b", "asr": { "model": "Qwen/Qwen3-ASR-1.7B" } }
+        }))
+        .expect("session.created must produce an event");
+        assert_eq!(event.asr_model.as_deref(), Some("Qwen/Qwen3-ASR-1.7B"));
+    }
+
+    #[test]
+    fn session_without_an_asr_reports_none() {
+        let event = classify(&json!({ "type": "session.created", "session": { "model": "m" } }))
+            .expect("session.created must produce an event");
+        assert_eq!(event.asr_model, None);
+    }
+
+    #[test]
+    fn the_asr_model_is_serialized_for_the_frontend() {
+        let event = Event { kind: "status", text: "connected".into(), asr_model: Some("Qwen/Qwen3-ASR-1.7B".into()), ..Default::default() };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["asrModel"], "Qwen/Qwen3-ASR-1.7B");
     }
 }

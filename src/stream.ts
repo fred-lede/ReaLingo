@@ -236,9 +236,14 @@ interface RtEvent {
   startMs?: number;
   endMs?: number;
   atMs?: number;
+  /** The ASR model the server is transcribing with, when it says. */
+  asrModel?: string;
 }
 
 void listen<RtEvent>("rt://event", ({ payload: e }) => {
+  // The server names the ASR model it is transcribing with. It is the server's choice,
+  // so this is kept for the settings sheet to show, not something we asked for.
+  if (e.asrModel) settings.lastServerAsr = e.asrModel;
   switch (e.kind) {
     case "status":
       if (e.text === "connecting") status.value = "connecting";

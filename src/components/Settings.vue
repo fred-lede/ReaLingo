@@ -5,6 +5,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region, type TranslationPace } from "../store";
 import { isRunning } from "../stream";
 import { PRESETS, PROTOCOLS, type Vendor } from "../languages";
+import { visibleServerAsr } from "../server-asr";
 import { t } from "../i18n";
 import Picker from "./Picker.vue";
 import Sheet from "./Sheet.vue";
@@ -50,6 +51,8 @@ watch(
 const vendor = computed(() => PROTOCOLS[settings.protocol].vendor);
 /** Region, workspace and the Model Studio links only mean something for Qwen. */
 const isQwen = computed(() => vendor.value === "qwen");
+/** The ASR model the server reported, for a custom endpoint only. */
+const serverAsr = computed(() => visibleServerAsr(settings.url, settings.lastServerAsr));
 
 const presets = computed(() =>
   PRESETS[settings.protocol].map((p) => ({ value: p.id, label: p.name, note: `${p.langs} ${t("langsUnit")}` }))
@@ -204,6 +207,14 @@ const advancedOpen = !!settings.url;
         <small v-if="isQwen">
           <button class="link" @click.prevent="openUrl(consoleUrl('model/market'))">{{ t("modelsLink") }} ↗</button>
         </small>
+      </div>
+
+      <!-- What the server is transcribing with. One model is loaded there and we cannot
+           choose it, so it is shown, never set. -->
+      <div v-if="settings.mode === 'remote' && serverAsr" class="field">
+        <span class="label">{{ t("serverAsrModel") }}</span>
+        <code class="endpoint">{{ serverAsr }}</code>
+        <small>{{ t("serverAsrHint") }}</small>
       </div>
 
       <div v-if="settings.mode === 'remote' && isQwen" class="field">
