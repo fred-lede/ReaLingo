@@ -138,6 +138,18 @@ impl LocalTranslator {
         let output = translate_with_fallback(context, target_is_chinese, |attempt_context, retry| {
             self.generate(text, target_language, attempt_context, retry, hints, possible)
         })?;
+        let output = match judge_translation(&output, &all_terms(hints, possible)) {
+            TranslationOutcome::Ready(text) => text,
+            TranslationOutcome::NeedsHintlessRetry => {
+                // The model copied the terminology back instead of translating with it.
+                // Ask once more without the hints — they are what it copied.
+                let candidate = self.generate(text, target_language, context, false, &[], possible)?;
+                if candidate.is_empty() {
+                    return Err("Translation model returned an empty result".into());
+                }
+                candidate
+            }
+        };
         if target_is_chinese && !context.is_empty() && looks_like_context_leak(text, &output, hints) {
             if let Ok(candidate) = self.generate(text, target_language, "", false, hints, possible) {
                 if !candidate.is_empty()
@@ -237,6 +249,62 @@ fn contains_chinese_characters(text: &str) -> bool {
     text.chars().any(is_chinese_character)
 }
 
+/// Every term the prompt carries: the ones that matched and the tentative ones from the
+/// recent context. The model may echo either kind.
+fn all_terms(hints: &[(String, String)], possible: &[(String, String)]) -> Vec<(String, String)> {
+    hints.iter().chain(possible.iter()).cloned().collect()
+}
+
+/// The lines the prompt carries, in the form the model would echo them back in.
+fn terminology_lines(terms: &[(String, String)]) -> Vec<String> {
+    let mut lines = vec![
+        "Terminology for current segment:".to_string(),
+        "Possible term from recent context (use only if it fits the current segment):".to_string(),
+    ];
+    for (source, target) in terms {
+        let source = source.trim();
+        let target = target.trim();
+        if !source.is_empty() && !target.is_empty() {
+            lines.push(format!("{source} => {target}"));
+        }
+    }
+    lines
+}
+
+/// Removes the prompt's own terminology lines from the model's answer.
+///
+/// A small model sometimes copies the terminology block straight back instead of
+/// translating with it — the output was literally "MIT => 麻省理工學院". Only whole lines
+/// that match a term we sent are dropped, so a translation that merely mentions the term
+/// keeps it.
+fn strip_terminology_echo(text: &str, terms: &[(String, String)]) -> String {
+    let lines = terminology_lines(terms);
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| !lines.iter().any(|echo| echo == line.trim()))
+        .collect();
+    kept.join("\n").trim().to_string()
+}
+/// What the model answered, and what to make of it.
+enum TranslationOutcome {
+    /// A translation, with any echoed terminology removed.
+    Ready(String),
+    /// The model copied the terminology block back instead of translating: ask again
+    /// without the hints, since they are what it copied.
+    NeedsHintlessRetry,
+}
+
+/// Reads the raw answer: an echoed terminology line is dropped, and an answer that was
+/// nothing but the echo asks for a retry without the hints.
+fn judge_translation(raw: &str, hints: &[(String, String)]) -> TranslationOutcome {
+    let cleaned = strip_terminology_echo(raw, hints);
+    if cleaned.is_empty() && !raw.trim().is_empty() {
+        TranslationOutcome::NeedsHintlessRetry
+    } else {
+        TranslationOutcome::Ready(cleaned)
+    }
+}
+
 fn looks_like_context_leak(source: &str, output: &str, hints: &[(String, String)]) -> bool {
     if !contains_chinese_characters(output) {
         return false;
@@ -286,7 +354,82 @@ fn translate_with_fallback(
 
 #[cfg(test)]
 mod tests {
-    use super::{cpu_model_params, looks_like_context_leak, translate_with_fallback, translation_user_text};
+    use super::{
+        all_terms, cpu_model_params, judge_translation, looks_like_context_leak,
+        strip_terminology_echo, translate_with_fallback, translation_user_text, TranslationOutcome,
+    };
+
+    #[test]
+    fn strips_a_terminology_line_the_model_echoed_back() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        let echoed = "MIT => 麻省理工學院\n\n所以我就去了麻省理工學院。";
+        assert_eq!(strip_terminology_echo(echoed, &hints), "所以我就去了麻省理工學院。");
+    }
+
+    #[test]
+    fn strips_the_terminology_header_the_model_echoed_back() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        let echoed = "Terminology for current segment:\nMIT => 麻省理工學院\n\n所以我就去了麻省理工學院。";
+        assert_eq!(strip_terminology_echo(echoed, &hints), "所以我就去了麻省理工學院。");
+    }
+
+    #[test]
+    fn a_translation_that_mentions_a_term_is_untouched() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        let translated = "我從麻省理工學院畢業。";
+        assert_eq!(strip_terminology_echo(translated, &hints), translated);
+    }
+
+    #[test]
+    fn a_pure_terminology_echo_becomes_empty() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        assert_eq!(strip_terminology_echo("MIT => 麻省理工學院", &hints), "");
+    }
+
+    #[test]
+    fn a_pure_echo_asks_for_the_translation_again_without_the_hints() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        assert!(matches!(
+            judge_translation("MIT => 麻省理工學院", &hints),
+            TranslationOutcome::NeedsHintlessRetry
+        ));
+    }
+
+    #[test]
+    fn a_translation_beside_an_echo_is_ready_as_it_is() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        match judge_translation("MIT => 麻省理工學院\n\n所以我就去了麻省理工學院。", &hints) {
+            TranslationOutcome::Ready(text) => assert_eq!(text, "所以我就去了麻省理工學院。"),
+            TranslationOutcome::NeedsHintlessRetry => panic!("a translation beside the echo is usable"),
+        }
+    }
+
+    #[test]
+    fn an_ordinary_translation_is_ready() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        match judge_translation("我從麻省理工學院畢業。", &hints) {
+            TranslationOutcome::Ready(text) => assert_eq!(text, "我從麻省理工學院畢業。"),
+            TranslationOutcome::NeedsHintlessRetry => panic!("an ordinary translation is usable"),
+        }
+    }
+
+    #[test]
+    fn a_possible_term_is_stripped_too_when_the_model_echoes_it() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        let possible = vec![("LoRA".to_string(), "低秩适配".to_string())];
+        let echoed = "LoRA => 低秩适配\n\n所以我們用了 LoRA。";
+        assert_eq!(strip_terminology_echo(echoed, &all_terms(&hints, &possible)), "所以我們用了 LoRA。");
+    }
+
+    #[test]
+    fn every_term_the_prompt_carries_is_covered() {
+        let hints = vec![("MIT".to_string(), "麻省理工學院".to_string())];
+        let possible = vec![("LoRA".to_string(), "低秩适配".to_string())];
+        let terms = all_terms(&hints, &possible);
+        assert_eq!(terms.len(), 2);
+        assert!(terms.iter().any(|(source, _)| source == "MIT"));
+        assert!(terms.iter().any(|(source, _)| source == "LoRA"));
+    }
 
     #[test]
     fn cpu_retry_disables_gpu_offload() {
