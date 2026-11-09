@@ -1,0 +1,212 @@
+name: Android tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      apk_run_id:
+        description: Reuse APKs from this run when only the test harness changed
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: android-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      apk_run_id: ${{ steps.reuse.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 10
+      - name: Reuse APKs when only launch tests changed
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_RUN_ID: ${{ inputs.apk_run_id }}
+        shell: bash
+        run: |
+          run_id="$APK_RUN_ID"
+          if [[ -z "$run_id" && "$GITHUB_EVENT_NAME" == push ]] && git rev-parse HEAD^ >/dev/null 2>&1; then
+            workflow='.github/workflows/android-test.yml'
+            sed -n '/^  apk:/,/^  launch:/p' "$workflow" > "$RUNNER_TEMP/apk-after.yml"
+            # A preceding test-only run may itself have reused an APK. Look back
+            # across that chain, but never cross an app/build-input change.
+            for previous in $(git rev-list --max-count=5 HEAD^); do
+              git show "$previous:$workflow" | sed -n '/^  apk:/,/^  launch:/p' > "$RUNNER_TEMP/apk-before.yml"
+              if ! cmp -s "$RUNNER_TEMP/apk-before.yml" "$RUNNER_TEMP/apk-after.yml" || ! git diff --quiet "$previous" HEAD -- . ':!tests/**' ':!scripts/smoke-android.mjs' ':!scripts/session-server.mjs' ':!.github/workflows/android-test.yml'; then break; fi
+              run_id=$(gh run list --workflow android-test.yml --commit "$previous" --limit 1 --json databaseId --jq '.[0].databaseId // empty' || true)
+              if [[ -n "$run_id" ]]; then
+                count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" --jq '[.artifacts[] | select(.expired == false and (.name == "android-aarch64-apk" or .name == "android-x86_64-apk"))] | length' || true)
+                if [[ "$count" != 2 ]]; then run_id=''; fi
+              fi
+              if [[ -n "$run_id" ]]; then break; fi
+            done
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          if [[ -n "$run_id" ]]; then
+            echo "APKs reused from https://github.com/$GITHUB_REPOSITORY/actions/runs/$run_id; application/build inputs are unchanged." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Download reused APKs for this run's artifacts
+        if: steps.reuse.outputs.run_id != ''
+        uses: actions/download-artifact@v7
+        with:
+          pattern: android-*-apk
+          path: reused-apks
+          run-id: ${{ steps.reuse.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Retain the ARM64 test APK in this run
+        if: steps.reuse.outputs.run_id != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-aarch64-apk
+          path: reused-apks/android-aarch64-apk/
+          if-no-files-found: error
+      - name: Retain the x86_64 test APK in this run
+        if: steps.reuse.outputs.run_id != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-x86_64-apk
+          path: reused-apks/android-x86_64-apk/
+          if-no-files-found: error
+
+  apk:
+    needs: resolve
+    if: needs.resolve.outputs.apk_run_id == ''
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+    env:
+      ANDROID_NDK_VERSION: '28.2.13676358'
+      ANDROID_REQUIRE_SIGNING: ${{ github.event_name != 'pull_request' }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Configure persistent Android signing
+        id: signing
+        run: node scripts/configure-android-signing.mjs
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+      - name: Install SDK and NDK
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' "ndk;$ANDROID_NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}-linux-android
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android-test-${{ matrix.target }}
+      - run: npm ci
+      - run: npm test
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - run: npm run build
+      - name: Build the release APK (including the Kotlin bridge)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REALINGO_MAVEN_REPO: ${{ runner.temp }}/realingo-maven
+        run: |
+          npm run tauri -- android init --ci --skip-targets-install
+          chmod +x src-tauri/gen/android/gradlew
+          node scripts/prepare-android.mjs
+          node scripts/fetch-gradle.mjs
+          python3 scripts/cache-gradle-kotlin.py "$RUNNER_TEMP"/realingo-gradle/gradle-*-bin.zip "$REALINGO_MAVEN_REPO"
+          npm run tauri -- android build --ci --apk --target ${{ matrix.target }}
+      - name: Verify signature and 16 KB ZIP alignment
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          mapfile -d '' apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' ! -name '*unsigned*' -print0)
+          test "${#apks[@]}" -eq 1
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "${apks[0]}"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "${apks[0]}"
+          python3 scripts/check-android-apk.py "${apks[0]}"
+          mkdir -p smoke-apk
+          cp "${apks[0]}" smoke-apk/realingo.apk
+          expected_id='com.nosugark.realingo'
+          if [[ "$SIGNED" != true ]]; then expected_id+='.debug'; fi
+          node scripts/verify-android-package.mjs "${apks[0]}" "$expected_id" "$ANDROID_HOME/build-tools/36.0.0/aapt" > smoke-apk/metadata.json
+          printf '%s\n' "$expected_id" > smoke-apk/package-id.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: android-${{ matrix.target }}-apk
+          path: smoke-apk/
+          if-no-files-found: error
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/realingo-upload.jks"
+
+  launch:
+    needs: [resolve, apk]
+    if: always() && needs.resolve.result == 'success' && (needs.apk.result == 'success' || needs.resolve.outputs.apk_run_id != '')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 35
+            tag: google_apis
+            page-size: 4096
+          # The API 35 16 KB preview ships WebView 124, which aborts in MemoryInfra.
+          # Keep API 35 coverage above and run 16 KB sessions on the stable API 36 image.
+          - api: 36
+            tag: google_apis_ps16k
+            page-size: 16384
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v7
+        with:
+          name: android-x86_64-apk
+          path: smoke-apk
+          run-id: ${{ needs.resolve.outputs.apk_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and exercise the APK
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          profile: pixel_2
+          ram-size: 4096M
+          heap-size: 512M
+          target: ${{ matrix.tag }}
+          disable-animations: true
+          script: |
+            bash scripts/check-android-pages.sh '${{ matrix.page-size }}'
+            node scripts/smoke-android.mjs smoke-apk/realingo.apk "$(cat smoke-apk/package-id.txt)"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: android-api${{ matrix.api }}-${{ matrix.page-size }}-diagnostics
+          path: android-smoke/

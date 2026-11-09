@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { visibleServerAsr } from '../src/server-asr.ts';
+import { visibleServerAsr } from '../src/core/server-asr.ts';
 
 test('the server ASR model is shown for a custom endpoint', () => {
   assert.equal(visibleServerAsr('ws://122.116.209.1:8001/v1/realtime', 'Qwen/Qwen3-ASR-1.7B'), 'Qwen/Qwen3-ASR-1.7B');

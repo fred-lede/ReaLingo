@@ -22,14 +22,14 @@ Rust core on Tauri 2, Vue 3 front end, Apple liquid-glass interface.
 
 Grab the installer for your platform from the
 [latest release](https://github.com/noSugarK/ReaLingo/releases/latest):
-`.exe` / `.msi` for Windows, `.dmg` for macOS (universal — Intel and Apple Silicon), `.deb` for Linux.
+`.exe` / `.msi` for Windows, `.dmg` for macOS (universal — Intel and Apple Silicon), `.deb` / `.rpm` for Linux.
 None of them carry a commercial code signature, so the OS stops the first launch once; let it through as below.
 
 | OS | Install | First launch |
 |---|---|---|
-| Windows 10/11 | Run `ReaLingo_x.y.z_x64-setup.exe` (or the `.msi`) | If SmartScreen says "Windows protected your PC", click **More info → Run anyway**; afterwards open it from the Start menu |
+| Windows 10/11 | Run `ReaLingo_x.y.z_windows_x86_64-setup.exe` (or the `.msi`) | If SmartScreen says "Windows protected your PC", click **More info → Run anyway**; afterwards open it from the Start menu |
 | macOS 12+ | Open the `.dmg` and drag ReaLingo into Applications | If macOS says the app is damaged or from an unidentified developer, run `xattr -dr com.apple.quarantine /Applications/ReaLingo.app` in Terminal, or click **Open Anyway** under **System Settings → Privacy & Security**; then allow microphone / system audio recording when asked |
-| Ubuntu 22.04+ | `sudo apt install ./ReaLingo_x.y.z_amd64.deb` (apt, not `dpkg -i`, so dependencies get pulled in) | Open it from the app menu, or run `realingo` |
+| Ubuntu 22.04+ | `sudo apt install ./ReaLingo_x.y.z_linux_x86_64.deb` (apt, not `dpkg -i`, so dependencies get pulled in) | Open it from the app menu, or run `realingo` |
 
 If system audio stays silent on macOS after an upgrade, remove ReaLingo under
 **System Settings → Privacy & Security → Screen & System Audio Recording** (and **Microphone**),
@@ -160,7 +160,7 @@ text in the config file, and the settings page says so rather than pretending ot
 **System audio on Ubuntu**: ALSA has neither a loopback flag nor any knowledge of the
 PulseAudio/PipeWire *monitor* sources — and a monitor is exactly the "record what this output
 is playing" device you pick in pavucontrol. So system audio on Linux does not go through cpal;
-it talks to the sound server directly (`src-tauri/src/pulse.rs`):
+it talks to the sound server directly (`src-tauri/src/audio/pulse.rs`):
 
 - `pactl list sources` lists every source; the ones carrying `Monitor of Sink` go straight
   into the device picker
@@ -179,11 +179,11 @@ pavucontrol's Recording tab.
 (`src-tauri/src/player.rs`), not by the webview. Exclusion works per process, and webview audio comes
 out of a separate WebView2 / WebKit process.
 
-- Windows (`src-tauri/src/wasapi.rs`): process loopback in `EXCLUDE_TARGET_PROCESS_TREE` mode records
+- Windows (`src-tauri/src/audio/wasapi.rs`): process loopback in `EXCLUDE_TARGET_PROCESS_TREE` mode records
   everything on the default output except our process tree. It can only record the default device, which
   is also where the speech plays, so it is used only when the selected device is the default; any other
   device never hears the speech and keeps plain loopback
-- macOS (`src-tauri/src/tap.rs`): system audio always goes through a tap we build ourselves, wrapped in a
+- macOS (`src-tauri/src/audio/tap.rs`): system audio always goes through a tap we build ourselves, wrapped in a
   private aggregate device and read through cpal as an ordinary input; while reading aloud, our process is
   on its exclusion list. Our process has to be known to Core Audio before it can be looked up, so playback
   starts before capture. cpal 0.17's own tap is not used: it creates the aggregate device with tap
@@ -232,16 +232,16 @@ xcode-select --install
 # Windows: Visual Studio Build Tools (Desktop C++) + WebView2 (bundled with Win11)
 ```
 
-Inspecting the running UI (`tools/cdp.mjs`) — useful because WebView2 gives you no DevTools;
+Inspecting the running UI (`scripts/cdp.mjs`) — useful because WebView2 gives you no DevTools;
 it evaluates JavaScript inside the real app instead of leaving you to guess:
 
 ```bash
 # launch with a remote debugging port
 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 npm run tauri dev
 # then, in another terminal
-node tools/cdp.mjs --list                 # list debuggable pages
-node tools/cdp.mjs probe.js               # evaluate in the main window
-node tools/cdp.mjs probe.js subtitle      # evaluate in the subtitle overlay
+node scripts/cdp.mjs --list                 # list debuggable pages
+node scripts/cdp.mjs probe.js               # evaluate in the main window
+node scripts/cdp.mjs probe.js subtitle      # evaluate in the subtitle overlay
 ```
 
 macOS and Linux bundles cannot be cross-compiled from Windows, so
@@ -270,6 +270,14 @@ part appears.
 git tag v0.2.1 && git push origin v0.2.1
 ```
 
+Release filenames follow `ReaLingo_<version>_<system>_<architecture>.<format>`; Windows EXE files retain the `-setup` suffix.
+The system/architecture pairs are `windows_x86_64`, `macos_universal`, `linux_x86_64`, and `android_arm64`.
+The macOS universal bundle includes both Intel x86_64 and Apple Silicon arm64.
+
+Linux ships DEB and RPM packages. On Fedora and other compatible RPM distributions, use
+`sudo dnf install ./ReaLingo_*_linux_x86_64.rpm`. RPM requires `webkit2gtk4.1`,
+the Ayatana AppIndicator shared library, and `pulseaudio-utils`; distribution compatibility still needs testing on the target system.
+
 Packaging locally:
 
 ```bash
@@ -277,6 +285,8 @@ npm run tauri build
 ```
 
 Tests (resampling, endpoint construction, per-API message shapes and subtitle segmentation):
+
+For Android permissions, sessions, icons and APK launch checks, see [Android testing and crash verification](development/android-testing.md).
 
 ```bash
 cd src-tauri && cargo test
@@ -288,8 +298,8 @@ rounded plate, because keying the white background out leaves fringes on the ant
 Re-run after changing the logo:
 
 ```bash
-node tools/make-icon.mjs brand/ReaLingo.png app-icon.png 1024
-npx tauri icon app-icon.png
+node scripts/make-icon.mjs brand/ReaLingo.png brand/app-icon.png 1024
+npx tauri icon brand/app-icon.png
 ```
 
 The in-app titlebar logo does not use that path: the white plate is for OS icon grids, and
@@ -297,7 +307,7 @@ inside the UI it reads as a white card stuck on the header — glaringly so in d
 comes from `make-banner.mjs` in `--mark` mode: graphic only, transparent background.
 
 ```bash
-node tools/make-banner.mjs brand/ReaLingo.png src/assets/mark.png 256 --mark
+node scripts/make-banner.mjs brand/ReaLingo.png src/assets/mark.png 256 --mark
 ```
 
 The horizontal lockup at the top of this file is produced by `make-banner.mjs`, which re-lays
@@ -307,8 +317,8 @@ would also erase the white A and 文 inside the bubbles and leave black holes on
 `make-anim.mjs` then adds a looping specular sweep:
 
 ```bash
-node tools/make-banner.mjs brand/ReaLingo.png brand/banner.png 160
-node tools/make-anim.mjs brand/banner.png brand/banner-animated.png
+node scripts/make-banner.mjs brand/ReaLingo.png brand/banner.png 160
+node scripts/make-anim.mjs brand/banner.png brand/banner-animated.png
 ```
 
 Background removal uses **two different rules**, because no single one gets both halves right:
@@ -363,7 +373,7 @@ audio file ──┘   (cpal / symphonia)                                       
 - **System audio** is the same call on all three platforms — an input stream on an *output*
   device — with each backend doing something different: Windows adds
   `AUDCLNT_STREAMFLAGS_LOOPBACK`, macOS creates a Core Audio process tap, Linux has no
-  equivalent (see the module comment in `src-tauri/src/audio.rs`).
+  equivalent (see the module comment in `src-tauri/src/audio/mod.rs`).
 - **Resampling** is a direct windowed sinc with the cutoff pinned to the lower of the two
   Nyquist frequencies, so any ratio is anti-aliased (48000/16000 = 3, 44100/16000 = 2.75625).
 

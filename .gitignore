@@ -7,3 +7,5 @@ src-tauri/gen/
 promo/
 models/
 graphify-out/
+.claude/
+.scratch/

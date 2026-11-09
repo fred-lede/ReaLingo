@@ -21,14 +21,14 @@ Tauri 2 + Rust 内核，Vue 3 前端，苹果液态玻璃风格界面。
 ## 下载与安装
 
 从 [Releases](https://github.com/noSugarK/ReaLingo/releases/latest) 取对应平台的安装包：
-Windows `.exe` / `.msi`、macOS `.dmg`（Intel 与 Apple Silicon 通用）、Linux `.deb`。
+Windows `.exe` / `.msi`、macOS `.dmg`（Intel 与 Apple Silicon 通用）、Linux `.deb` / `.rpm`。
 安装包都没有商业代码签名，首次打开会被系统拦一下，按下面放行即可。
 
 | 系统 | 安装 | 首次打开 |
 |---|---|---|
-| Windows 10/11 | 双击 `ReaLingo_x.y.z_x64-setup.exe`（或 `.msi`） | SmartScreen 提示「Windows 已保护你的电脑」时点 **更多信息 → 仍要运行**；之后从开始菜单打开 |
+| Windows 10/11 | 双击 `ReaLingo_x.y.z_windows_x86_64-setup.exe`（或 `.msi`） | SmartScreen 提示「Windows 已保护你的电脑」时点 **更多信息 → 仍要运行**；之后从开始菜单打开 |
 | macOS 12+ | 打开 `.dmg`，把 ReaLingo 拖进「应用程序」 | 提示「已损坏」或「无法验证开发者」时，终端执行 `xattr -dr com.apple.quarantine /Applications/ReaLingo.app`，或到 **系统设置 → 隐私与安全性** 点 **仍要打开**；随后按提示允许麦克风 / 系统录音 |
-| Ubuntu 22.04+ | `sudo apt install ./ReaLingo_x.y.z_amd64.deb`（用 apt 才会拉依赖） | 从应用菜单打开，或终端运行 `realingo` |
+| Ubuntu 22.04+ | `sudo apt install ./ReaLingo_x.y.z_linux_x86_64.deb`（用 apt 才会拉依赖） | 从应用菜单打开，或终端运行 `realingo` |
 
 macOS 升级后系统声音没反应：到 **系统设置 → 隐私与安全性 → 屏幕与系统录音**（以及 **麦克风**）
 里删掉 ReaLingo，重开应用再授权一次 —— ad-hoc 签名每个版本都不同，旧的授权可能对不上。
@@ -143,7 +143,7 @@ Linux 上如果没有跑 Secret Service（无桌面环境或精简发行版）�
 
 **Ubuntu 的系统声音**：ALSA 既没有回录标志，也不枚举 PulseAudio/PipeWire 的 monitor 源 ——
 monitor 正是「录下这个输出在放什么」的设备，pavucontrol 里能选到的就是它。所以 Linux 的系统声音
-不走 cpal，而是直接跟声音服务器说话（`src-tauri/src/pulse.rs`）：
+不走 cpal，而是直接跟声音服务器说话（`src-tauri/src/audio/pulse.rs`）：
 
 - `pactl list sources` 列出全部源，带 `Monitor of Sink` 的就是 monitor，直接进设备下拉框
 - `parec` 录其中一个，raw PCM 走 stdout。直接问它要 s16le / 单声道 / 当前接口要的采样率（16k 或 24k），降混和重采样由声音
@@ -158,10 +158,10 @@ monitor 正是「录下这个输出在放什么」的设备，pavucontrol 里能
 **朗读时为什么不会录回去**：朗读在 Rust 里用 cpal 播放（`src-tauri/src/player.rs`），不交给 webview。
 排除是按进程算的，而 webview 的声音来自另一个 WebView2 / WebKit 进程。
 
-- Windows（`src-tauri/src/wasapi.rs`）：process loopback 的 `EXCLUDE_TARGET_PROCESS_TREE` 模式，
+- Windows（`src-tauri/src/audio/wasapi.rs`）：process loopback 的 `EXCLUDE_TARGET_PROCESS_TREE` 模式，
   录「默认输出设备上除了本进程树以外的所有声音」。它只能录默认设备，而朗读也放在默认设备上，
   所以只有选中的就是默认设备时才走这条路；选了别的设备本来就录不到朗读，仍走普通 loopback
-- macOS（`src-tauri/src/tap.rs`）：系统声音一律走自建的 tap，包成私有聚合设备交给 cpal 当普通输入读；
+- macOS（`src-tauri/src/audio/tap.rs`）：系统声音一律走自建的 tap，包成私有聚合设备交给 cpal 当普通输入读；
   朗读时把本进程列进排除名单。本进程要先在 Core Audio 里出现才查得到，所以先开播放再开采集。
   不用 cpal 0.17 自带的 tap：它建聚合设备时关了 tap 自动启动，只录到静音；设备 UID 是写死的，
   又不销毁，第二次开始就报 `Illegal operation`。新建的聚合设备要过一小会儿才报得出输入配置，
@@ -205,16 +205,16 @@ xcode-select --install
 # Windows：Visual Studio Build Tools（C++ 桌面开发）+ WebView2（Win11 自带）
 ```
 
-调试运行中的界面（`tools/cdp.mjs`）—— WebView2 里看不到 DevTools 时很有用，
+调试运行中的界面（`scripts/cdp.mjs`）—— WebView2 里看不到 DevTools 时很有用，
 可以直接在真实应用的页面里求值，而不是靠猜：
 
 ```bash
 # 带远程调试端口启动
 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 npm run tauri dev
 # 另开一个终端
-node tools/cdp.mjs --list                 # 列出可调试页面
-node tools/cdp.mjs probe.js               # 在主窗口求值
-node tools/cdp.mjs probe.js subtitle      # 在字幕窗求值
+node scripts/cdp.mjs --list                 # 列出可调试页面
+node scripts/cdp.mjs probe.js               # 在主窗口求值
+node scripts/cdp.mjs probe.js subtitle      # 在字幕窗求值
 ```
 
 macOS 和 Ubuntu 的安装包没法在 Windows 上交叉编译，由 `.github/workflows/build.yml`
@@ -245,22 +245,24 @@ git tag v0.2.1 && git push origin v0.2.1
 |---|---|
 | `realingo-x86_64-pc-windows-msvc` | `.msi` + NSIS `.exe` |
 | `realingo-universal-apple-darwin` | `.dmg`，**Intel 与 Apple Silicon 通用** |
-| `realingo-x86_64-unknown-linux-gnu` | `.deb`（约 6 MB） |
+| `realingo-x86_64-unknown-linux-gnu` | `.deb` + `.rpm` |
 
 macOS 不再单独跑 Intel job —— `macos-13` runner 已于 2025-12 退役，x86_64 的 job 只会一直排队；
 改为在 Apple Silicon 上交叉编译出 universal 二进制，一个 DMG 通吃。
 
-Linux 只出 `.deb`：它在 `tauri.conf.json` 里声明了 `libwebkit2gtk-4.1-0` 与
-`libayatana-appindicator3-1`，装的时候 apt 会自己把依赖拉下来 ——
+发布文件统一命名为 `ReaLingo_<版本>_<系统>_<架构>.<格式>`，Windows EXE 保留 `-setup` 后缀。
+系统与架构分别为 `windows_x86_64`、`macos_universal`、`linux_x86_64`、`android_arm64`。
+macOS universal 包同时包含 Intel x86_64 和 Apple Silicon arm64。
+
+Linux 同时提供 DEB 和 RPM，由包管理器安装运行依赖：
 
 ```bash
-sudo apt install ./ReaLingo_0.2.1_amd64.deb   # 用 apt 而不是 dpkg -i，才会解析依赖
+sudo apt install ./ReaLingo_*_linux_x86_64.deb  # Ubuntu / Debian
+sudo dnf install ./ReaLingo_*_linux_x86_64.rpm  # Fedora 等 RPM 发行版，需提供 WebKitGTK 4.1
 ```
 
-不出 AppImage 是因为它存在的意义就是自带一份 WebKitGTK 去伺候没有该库的发行版，
-而我们的目标是 Ubuntu 22.04+（`libwebkit2gtk-4.1-0` 从 22.04 起就在源里），
-那 90 MB 纯属白背。要覆盖 Fedora/Arch 的话，workflow 里 `--bundles deb` 后面
-补 `,rpm` 或 `,appimage` 即可。
+RPM 声明 `webkit2gtk4.1`、Ayatana AppIndicator 共享库和 `pulseaudio-utils` 依赖。
+目前不提供 AppImage。RPM 的实际发行版兼容性仍需在对应系统上验证。
 
 打包：
 
@@ -269,6 +271,8 @@ npm run tauri build
 ```
 
 测试（重采样、地址拼接、各接口的消息格式与字幕切分）：
+
+安卓分支的权限、会话、图标及 APK 启动验证见 [Android 测试与闪退排查](development/android-testing.md)。
 
 ```bash
 cd src-tauri && cargo test
@@ -279,15 +283,15 @@ cd src-tauri && cargo test
 （直接抠白底会在抗锯齿边缘留白边）。logo 换了就重跑：
 
 ```bash
-node tools/make-icon.mjs brand/ReaLingo.png app-icon.png 1024
-npx tauri icon app-icon.png
+node scripts/make-icon.mjs brand/ReaLingo.png brand/app-icon.png 1024
+npx tauri icon brand/app-icon.png
 ```
 
 应用内标题栏的 logo 不走这条路：白底板是给 OS 图标网格用的，放进界面里就是块贴在标题栏上的
 白卡片，深色主题下尤其突兀。它由 `make-banner.mjs` 的 `--mark` 模式出，只取图形、透明底：
 
 ```bash
-node tools/make-banner.mjs brand/ReaLingo.png src/assets/mark.png 256 --mark
+node scripts/make-banner.mjs brand/ReaLingo.png src/assets/mark.png 256 --mark
 ```
 
 README 顶部的横版 logo 由 `make-banner.mjs` 把上下堆叠的原 logo 重排成「图形在左、彩色字在右」，
@@ -295,8 +299,8 @@ README 顶部的横版 logo 由 `make-banner.mjs` 把上下堆叠的原 logo 重
 在深色主题下变成黑窟窿。`make-anim.mjs` 再给它加一道循环掠过的高光：
 
 ```bash
-node tools/make-banner.mjs brand/ReaLingo.png brand/banner.png 160
-node tools/make-anim.mjs brand/banner.png brand/banner-animated.png
+node scripts/make-banner.mjs brand/ReaLingo.png brand/banner.png 160
+node scripts/make-anim.mjs brand/banner.png brand/banner-animated.png
 ```
 
 抠白底对两半用了**不同规则**，因为没有单一规则能同时做对：图形里气泡中的白色 A / 文 是**内容**，
@@ -341,7 +345,7 @@ GIF 只有 256 色，渐变字会断层，且 1-bit 透明会在深色底上留�
   （不然最后半句出不来），之后连续 4 秒没有新文字、也没有非静音音频就结束会话。
 - **系统声音**：三个平台都是「对输出设备建 input stream」这一个调用，后端各自处理 ——
   Windows 加 `AUDCLNT_STREAMFLAGS_LOOPBACK`，macOS 建 Core Audio process tap，
-  Linux 没有对应机制（细节见 `src-tauri/src/audio.rs` 的模块注释）。
+  Linux 没有对应机制（细节见 `src-tauri/src/audio/mod.rs` 的模块注释）。
 - **重采样**：直接窗化 sinc，截止频率取两端奈奎斯特的较小者，任意比率都抗混叠
   （48000/16000 = 3，44100/16000 = 2.75625）。
 

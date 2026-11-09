@@ -156,6 +156,11 @@ pub struct Settings {
     pub whisper_model_path: String,
     #[serde(default)]
     pub translation_model_path: String,
+    /// Phone only: where the voice plays: "" (the system's choice), "speaker", "earpiece"
+    /// or "headphones". See `player::output_kinds`.
+    #[serde(default)]
+    pub output: String,
+
     /// Translate both ways between the two languages. Only Volc (Chinese–English) does.
     #[serde(default)]
     pub two_way: bool,
@@ -354,14 +359,15 @@ impl Settings {
         }
     }
 
-    /// Gemini wants its `setup` acknowledged before any audio; the others take it at once.
+    /// These services require their session configuration to be acknowledged before audio.
     pub fn waits_for_setup(&self) -> bool {
-        matches!(self.protocol, Protocol::Gemini | Protocol::Volc)
+        matches!(self.protocol, Protocol::Qwen38 | Protocol::Gemini | Protocol::Volc)
     }
 
     /// The frame that releases audio for a protocol that `waits_for_setup`.
     pub fn is_ready(&self, v: &serde_json::Value) -> bool {
         match self.protocol {
+            Protocol::Qwen38 => v.get("type").and_then(serde_json::Value::as_str) == Some("session.updated"),
             Protocol::Gemini => v.get("setupComplete").is_some(),
             Protocol::Volc => v.get("type").and_then(serde_json::Value::as_str) == Some("volc.SessionStarted"),
             _ => true,
@@ -574,6 +580,8 @@ mod tests {
             voice: VOICE.into(),
             whisper_model_path: String::new(),
             translation_model_path: String::new(),
+            output: String::new(),
+
             two_way: false,
         }
     }

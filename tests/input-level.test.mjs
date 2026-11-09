@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isInputTooQuiet } from '../src/input-level.ts';
+import { isInputTooQuiet } from '../src/core/input-level.ts';
 
 test('an input the recogniser handles well does not warn', () => {
   // 0.0067 is a microphone at a low gain. The server judges speech by the input level

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyLocalDiagnostics, updateLocalDiagnostics } from '../src/local-diagnostics.ts';
+import { emptyLocalDiagnostics, updateLocalDiagnostics } from '../src/core/local-diagnostics.ts';
 
 test('local diagnostics converts queued 100 ms chunks and retains the latest stage timings', () => {
   let stats = emptyLocalDiagnostics();

@@ -1,0 +1,1002 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+
+import Card from "./components/Card.vue";
+import FontSize from "./components/FontSize.vue";
+import Picker from "./components/Picker.vue";
+import Slider from "./components/Slider.vue";
+import Settings from "./components/Settings.vue";
+import About from "./components/About.vue";
+import History from "../shared/History.vue";
+import { locale, setLocale, t } from "../core/i18n";
+import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
+import { check, checkUpdateAtStartup, openHome } from "../core/update";
+import type { BackendStatus } from "../core/local-diagnostics";
+import { activeKey, settings, initSettings, resolvedTheme, SUB_SIZE, type SubAlign, type SubMode, type SubtitleStyle } from "../core/store";
+import { isInputTooQuiet } from "../core/input-level";
+import {
+  current,
+  detectedLang,
+  errorMsg,
+  saveAs,
+  fileProgress,
+  isRunning,
+  lines,
+  localDiagnostics,
+  rawLog,
+  speaking,
+  start,
+  status,
+  stop,
+  warnMsg,
+} from "../core/stream";
+
+type SourceKind = "mic" | "system" | "file";
+
+const win = getCurrentWindow();
+const showSettings = ref(false);
+const showAbout = ref(false);
+const showHistory = ref(false);
+const showDiag = ref(false);
+const sourceKind = ref<SourceKind>("mic");
+const backendKeys = { detecting: "backendDetecting", metal: "backendMetal", cuda: "backendCuda", cpu: "backendCpu", unknown: "backendUnknown" } as const;
+const backendLabel = (status: BackendStatus) => backendKeys[status];
+const devices = ref<{ id: string; name: string; loopback: boolean }[]>([]);
+const deviceId = ref("");
+const filePath = ref("");
+const recordingState = ref<"idle" | "recording" | "saved" | "error">("idle");
+const recordingFile = ref("");
+const recordingError = ref("");
+const level = ref(0);
+/** The smoothed RMS of the input: what the remote service will actually hear. */
+const inputRms = ref(0);
+/** What the host OS can do; decides whether the "system audio" tab has real devices. */
+const caps = ref({ os: "", loopback: true });
+const streamEl = ref<HTMLElement | null>(null);
+
+const maximized = ref(false);
+/** The window draws its own rounded edge, which has to go flat when it fills the screen. */
+async function syncMaximized() {
+  maximized.value = await win.isMaximized();
+  document.documentElement.toggleAttribute("data-maximized", maximized.value);
+}
+void win.onResized(syncMaximized);
+
+const isDark = computed(() => resolvedTheme.value === "dark");
+function cycleTheme() {
+  settings.theme = isDark.value ? "light" : "dark";
+}
+
+const AUDIO_EXT = ["mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "oga"];
+
+// Where loopback is unavailable (Linux), the "system audio" tab still lists ordinary inputs:
+// the user routes our recording stream to a monitor source outside the app.
+const wantLoopback = computed(() => sourceKind.value === "system" && caps.value.loopback);
+const recordableSource = computed(() => sourceKind.value === "mic" ||
+  (sourceKind.value === "system" && caps.value.loopback && (caps.value.os === "macos" || caps.value.os === "windows")));
+const recordEnabled = computed({
+  get: () => sourceKind.value === "mic" ? settings.recordMic : settings.recordSystem,
+  set: (enabled: boolean) => {
+    if (sourceKind.value === "mic") settings.recordMic = enabled;
+    else settings.recordSystem = enabled;
+  },
+});
+const visibleDevices = computed(() =>
+  devices.value.filter((d) => d.loopback === wantLoopback.value)
+);
+const fileName = computed(() => filePath.value.split(/[\\/]/).pop() ?? "");
+const deviceOptions = computed(() =>
+  visibleDevices.value.map((d) => ({ value: d.id, label: d.name }))
+);
+const canStart = computed(() =>
+  sourceKind.value === "file" ? !!filePath.value : visibleDevices.value.some((device) => device.id === deviceId.value)
+);
+
+const statusKey = computed(() => {
+  if (settings.mode === "remote" && !activeKey().trim()) return "statusNoKey" as const;
+  if (status.value === "error") return "statusError" as const;
+  if (status.value === "connecting") return "statusConnecting" as const;
+  if (status.value === "stopping") return "statusStopping" as const;
+  if (status.value === "connected") return speaking.value ? ("statusListening" as const) : ("statusConnected" as const);
+  return "statusIdle" as const;
+});
+
+/** A quiet microphone leaves a remote service with nothing to hear, and no way to say so. */
+const inputTooQuiet = computed(() =>
+  isInputTooQuiet(inputRms.value, { running: isRunning(), remote: settings.mode === "remote" })
+);
+
+async function refreshDevices() {
+  caps.value = await invoke("platform");
+  devices.value = await invoke("list_devices");
+  await pickDefaultDevice();
+}
+
+async function pickDefaultDevice() {
+  if (sourceKind.value === "file") return;
+  if (visibleDevices.value.some((d) => d.id === deviceId.value)) return;
+  const preferred = await invoke<string | null>("default_device", {
+    loopback: wantLoopback.value,
+  });
+  deviceId.value = preferred ?? visibleDevices.value[0]?.id ?? "";
+}
+
+watch(sourceKind, pickDefaultDevice);
+
+async function chooseFile() {
+  const picked = await openDialog({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Audio", extensions: AUDIO_EXT }],
+  });
+  if (typeof picked === "string") filePath.value = picked;
+}
+
+void listen<{ status: string; file?: string; message?: string }>("audio://recording", ({ payload }) => {
+  recordingState.value = payload.status as typeof recordingState.value;
+  recordingFile.value = payload.file ?? recordingFile.value;
+  recordingError.value = payload.message ?? "";
+});
+
+async function openRecordingsDir() {
+  try {
+    await invoke("open_recordings_dir");
+  } catch (e) {
+    recordingError.value = String(e);
+  }
+}
+
+/* ---------- read aloud ---------- */
+// The note says what the voice sounds like; search matches names and descriptions in both
+// UI languages, so typing "温柔" or "British" narrows the list.
+/** The protocol's voice list; null when the service picks the voice itself. */
+const voiceList = computed(() => PROTOCOLS[settings.protocol].voices);
+const voiceOptions = computed(() =>
+  VOICE_LISTS[voiceList.value ?? "qwen"].map((v) => ({
+    value: v.id,
+    label: voiceLabel(v, locale.value),
+    note: locale.value === "zh" ? v.descZh : v.descEn,
+    keywords: `${v.zh} ${v.descZh} ${v.descEn}`,
+  }))
+);
+// One `voice` setting serves every list, so each list's pick is parked on the way out and
+// brought back on the way in — a round trip through Volcengine keeps the Qwen voice.
+watch(voiceList, (now, was) => {
+  if (was) settings.savedVoices[was] = settings.voice;
+  if (!now) return;
+  const list = VOICE_LISTS[now];
+  const back = settings.savedVoices[now];
+  if (back && list.some((v) => v.id === back)) settings.voice = back;
+  else if (!list.some((v) => v.id === settings.voice)) settings.voice = list[0].id;
+}, { immediate: true });
+// How the source language is set (see PROTOCOLS): some services always detect it. Local
+// mode is not one of them — there the user picks the language Whisper listens for.
+const sourceMode = computed(() => settings.mode === "local" ? "either" : PROTOCOLS[settings.protocol].source);
+watch(sourceMode, (mode) => {
+  if (mode === "detected") settings.sourceLang = "auto";
+}, { immediate: true });
+// Why speaking cannot happen with the current choices, if it cannot. Linux has no way to
+// leave our own playback out of a monitor source, so system audio would hear itself.
+const speakBlocked = computed(() => {
+  if (settings.mode === "local") return "localNoSpeech" as const;
+  // Two-way speaks Chinese and English, both always speakable where two-way exists.
+  if (!twoWay.value && !canSpeak(settings.protocol, settings.targetLang)) return "speakNoLang" as const;
+  if (caps.value.os === "linux" && sourceKind.value === "system") return "speakLinuxSystem" as const;
+  return null;
+});
+
+async function toggle() {
+  if (isRunning()) {
+    await stop();
+    return;
+  }
+  if (settings.mode === "remote" && !activeKey().trim()) {
+    showSettings.value = true;
+    return;
+  }
+  recordingState.value = "idle";
+  recordingFile.value = "";
+  recordingError.value = "";
+  await start(
+    sourceKind.value === "file"
+      ? { kind: "file", path: filePath.value }
+      : { kind: "device", id: deviceId.value, record: recordableSource.value && recordEnabled.value, format: settings.recordFormat },
+    settings.mode === "remote" && settings.speak && !speakBlocked.value
+  );
+}
+
+/* ---------- subtitle overlay ---------- */
+async function subtitleWindow() {
+  return await WebviewWindow.getByLabel("subtitle");
+}
+
+async function pushOverlayStyle() {
+  await emitTo("subtitle", "sub://style", { ...JSON.parse(JSON.stringify(settings.sub)), transcribeOnly: settings.mode === "local" && settings.transcribeOnly });
+}
+
+async function showOverlay(show: boolean) {
+  const w = await subtitleWindow();
+  if (!w) return;
+  if (!show) return w.hide();
+  await w.show();
+  await setOverlayClickThrough(settings.sub.locked);
+  await pushOverlayStyle();
+  // An always-on-top overlay appearing must not pull focus away from the window the user
+  // is actually clicking in.
+  await win.setFocus();
+}
+
+async function setOverlayClickThrough(locked: boolean) {
+  const w = await subtitleWindow();
+  // A hidden window has no underlying GDK window on Linux, and the click-through call
+  // unwraps it -> hard panic at startup. Only ever apply it to a window that is up;
+  // showOverlay re-applies it right after show().
+  if (!w || !(await w.isVisible())) return;
+  await w.setIgnoreCursorEvents(locked);
+}
+
+// Styling is cheap to push on every tick; show/hide and click-through are window calls that
+// must fire only on a real change. Dragging a slider used to re-`show()` an already visible
+// always-on-top window dozens of times a second, which is what made focus feel broken.
+// The overlay's own right-click menu. It cannot persist anything itself — settings live
+// here — so it sends the change up and the watch below broadcasts the result back down.
+void listen<Partial<SubtitleStyle>>("sub://patch", ({ payload }) => Object.assign(settings.sub, payload));
+
+watch(() => settings.sub, pushOverlayStyle, { deep: true });
+watch(() => [settings.mode, settings.transcribeOnly], pushOverlayStyle);
+watch(() => settings.sub.show, showOverlay);
+watch(() => settings.sub.locked, setOverlayClickThrough);
+
+/* ---------- model / languages ---------- */
+const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) => l.code) : languageCodes(settings.protocol, settings.model));
+const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
+/** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
+const modelLabel = computed(() => settings.mode === "local"
+  ? (transcribingOnly.value ? settings.whisperModelPath : settings.translationModelPath).split(/[\\/]/).pop() || t("modeLocal")
+  : modelName(settings.protocol, settings.model));
+
+/** The picker matches on both UI languages, so a zh user can still type "japanese". */
+const langOptions = computed(() =>
+  langCodes.value.map((c) => ({
+    value: c,
+    label: langName(c, locale.value),
+    note: c,
+    keywords: `${langName(c, "zh")} ${langName(c, "en")}`,
+  }))
+);
+/** Volcengine wants Chinese or English on one side of every pair (PROTOCOLS `hub`). */
+const hub = computed(() => PROTOCOLS[settings.protocol].hub);
+const onHub = (code: string) => !hub.value.length || hub.value.includes(code);
+/** Once one side is off the hub, the other side may only offer the hub's languages. */
+const pairableWith = (other: string) =>
+  onHub(other) ? langOptions.value : langOptions.value.filter((o) => onHub(o.value));
+const sourceLangOptions = computed(() => [
+  ...(sourceMode.value === "named" ? [] : [{ value: "auto", label: langName("auto", locale.value) }]),
+  ...(sourceMode.value === "detected" ? [] : pairableWith(settings.targetLang)),
+]);
+const targetLangOptions = computed(() => pairableWith(settings.sourceLang));
+
+// Switching to the smaller model can strand a language it cannot translate into; the
+// session would then be refused server-side, so repair the selection here instead. The
+// pickers keep a pair valid from then on; this covers arriving with one already invalid.
+watch([langCodes, sourceMode, hub], ([codes, mode]) => {
+  const ok = new Set(codes);
+  if (settings.sourceLang !== "auto" && !ok.has(settings.sourceLang)) settings.sourceLang = "auto";
+  if (!ok.has(settings.targetLang)) settings.targetLang = ok.has("en") ? "en" : codes[0];
+  if (mode === "named" && settings.sourceLang === "auto") settings.sourceLang = settings.targetLang === "zh" ? "en" : "zh";
+  if (!onHub(settings.sourceLang) && !onHub(settings.targetLang)) settings.targetLang = hub.value[0];
+}, { immediate: true });
+
+/** Chinese ⇄ English in one session; only where the protocol can, and then pickers step aside. */
+const canTwoWay = computed(() => PROTOCOLS[settings.protocol].twoWay);
+const twoWay = computed(() => canTwoWay.value && settings.twoWay);
+
+/** Stored 0–1, edited as whole percent — "0.53" in a number field reads badly. */
+const subOpacityPct = computed({
+  get: () => Math.round(settings.sub.opacity * 100),
+  set: (v: number) => (settings.sub.opacity = v / 100),
+});
+
+/** One range for both of the overlay's font-size sliders. */
+const SUB_SLIDER = { min: SUB_SIZE.min, max: SUB_SIZE.max, step: 1 } as const;
+
+/** The three bars of each icon, wide/short/wide, shifted to show the alignment. */
+const subAligns: [SubAlign, "alignLeft" | "alignCenter" | "alignRight", string][] = [
+  ["left", "alignLeft", "M2 4h12M2 8h7M2 12h12"],
+  ["center", "alignCenter", "M2 4h12M4.5 8h7M2 12h12"],
+  ["right", "alignRight", "M2 4h12M7 8h7M2 12h12"],
+];
+
+const subModes: [SubMode, "subBoth" | "subTarget" | "subSource"][] = [
+  ["both", "subBoth"],
+  ["target", "subTarget"],
+  ["source", "subSource"],
+];
+
+/* ---------- system tray ---------- */
+async function syncTray() {
+  // Labels are sent from here because the zh/en dictionary lives in the frontend; Rust just
+  // rebuilds the menu from whatever it is given.
+  await invoke("sync_tray", {
+    menuState: {
+      tooltip: `ReaLingo · ${t(statusKey.value)}`,
+      showLabel: t("trayShow"),
+      runLabel: isRunning() ? t("stop") : t(transcribingOnly.value ? "startTranscription" : "start"),
+      overlayLabel: t("subShow"),
+      overlayOn: settings.sub.show,
+      clickThroughLabel: t("subLockShort"),
+      clickThroughOn: settings.sub.locked,
+      modeLabel: t("subMode"),
+      modes: (transcribingOnly.value ? subModes.filter(([value]) => value === "source") : subModes).map(([value, key]) => ({
+        id: value,
+        label: t(key),
+        on: transcribingOnly.value || settings.sub.mode === value,
+      })),
+      quitLabel: t("trayQuit"),
+    },
+  });
+}
+
+void listen<string>("tray://action", ({ payload: id }) => {
+  if (id === "run") void toggle();
+  else if (id === "overlay") settings.sub.show = !settings.sub.show;
+  else if (id === "click-through") settings.sub.locked = !settings.sub.locked;
+  else if (id.startsWith("mode:")) settings.sub.mode = id.slice(5) as SubMode;
+});
+
+// Deliberately not watching `speaking`: it flips on every VAD tick and rebuilding a native
+// menu that often is the same churn that broke focus for the overlay.
+watch([locale, status, () => settings.sub, transcribingOnly], syncTray, { deep: true });
+
+/* ---------- export ---------- */
+const exportAs = (kind: "txt" | "srt") => saveAs(kind, lines.value, transcribingOnly.value ? "transcription" : "translation");
+
+/* ---------- lifecycle ---------- */
+let levelTimer: number | undefined;
+
+onMounted(async () => {
+  // Fire and forget: the window must not wait on GitHub to finish painting.
+  void checkUpdateAtStartup();
+  await initSettings();
+  await refreshDevices();
+  await showOverlay(settings.sub.show);
+  await syncTray();
+  levelTimer = window.setInterval(async () => {
+    if (!isRunning()) {
+      level.value = 0;
+      inputRms.value = 0;
+      return;
+    }
+    const levels = await invoke<{ peak: number; rms: number }>("input_level");
+    level.value = levels.peak;
+    inputRms.value = levels.rms;
+  }, 60);
+});
+
+onUnmounted(() => window.clearInterval(levelTimer));
+
+watch([lines, current], async () => {
+  await nextTick();
+  streamEl.value?.scrollTo({ top: streamEl.value.scrollHeight, behavior: "smooth" });
+}, { deep: true });
+</script>
+
+<template>
+  <div class="ambient"><i /></div>
+
+  <div class="shell">
+    <header class="titlebar" data-tauri-drag-region>
+      <!-- Opens About rather than jumping straight to the browser: this sits inside the
+           drag region, and a mis-aimed window drag should not launch a browser tab. The
+           repository link lives one click away, in the sheet. -->
+      <button class="brand" :title="t('about')" @click="showAbout = true">
+        <img class="mark" src="../assets/mark.png" alt="" draggable="false" />
+        <div class="brand-text">
+          <strong>{{ t("appTitle") }}</strong>
+          <!-- Its own target inside the brand button: what it names is changed in Settings. -->
+          <small class="brand-model" :title="t('settings')" @click.stop="showSettings = true">{{ modelLabel }}</small>
+        </div>
+      </button>
+
+      <button
+        v-if="check.state === 'found'"
+        class="upd"
+        :title="t('updFound') + ' ' + check.tag"
+        @click="openHome"
+      >
+        {{ t("updFound") }} {{ check.tag }}
+      </button>
+
+      <div class="pill glass-thin" :class="status">
+        <span class="dot" />
+        {{ t(statusKey) }}
+      </div>
+
+      <div class="spacer" data-tauri-drag-region />
+
+      <!-- Names the language a click switches to, like any language switcher. -->
+      <button
+        class="btn-icon locale"
+        :aria-label="locale === 'zh' ? 'Switch to English' : '切换到中文'"
+        @click="setLocale(locale === 'zh' ? 'en' : 'zh')"
+      >
+        {{ locale === "zh" ? "EN" : "中" }}
+      </button>
+      <button class="btn-icon" :aria-label="t('theme')" @click="cycleTheme">
+        <svg v-if="isDark" width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M13.4 9.6A5.8 5.8 0 0 1 6.4 2.6a5.8 5.8 0 1 0 7 7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+        </svg>
+        <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 1v1.7M8 13.3V15M15 8h-1.7M2.7 8H1M12.9 3.1l-1.2 1.2M4.3 11.7l-1.2 1.2M12.9 12.9l-1.2-1.2M4.3 4.3L3.1 3.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+      </button>
+      <button class="btn-icon" :class="{ active: showDiag }" title="Raw events" @click="showDiag = !showDiag">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M6 3L2.5 8 6 13M10 3l3.5 5-3.5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <button class="btn-icon" :aria-label="t('settings')" @click="showSettings = true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      </button>
+      <div class="win-buttons">
+        <button class="btn-icon" :title="t('toTray')" :aria-label="t('toTray')" @click="win.hide()">
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+            <path d="M6.5 1v6.2M6.5 7.4L4.1 5M6.5 7.4L8.9 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M1.6 9.8v1.1a1 1 0 0 0 1 1h7.8a1 1 0 0 0 1-1V9.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+        </button>
+        <button class="btn-icon" aria-label="Minimize" @click="win.minimize()">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+        </button>
+        <button
+          class="btn-icon"
+          :aria-label="maximized ? t('restore') : t('maximize')"
+          :title="maximized ? t('restore') : t('maximize')"
+          @click="win.toggleMaximize()"
+        >
+          <svg v-if="maximized" width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <rect x="1.5" y="3.5" width="7" height="7" rx="1.4" stroke="currentColor" stroke-width="1.3" />
+            <path d="M4 3.2V2.9a1.4 1.4 0 0 1 1.4-1.4h4.2A1.4 1.4 0 0 1 11 2.9v4.2A1.4 1.4 0 0 1 9.6 8.5h-.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+          </svg>
+          <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <rect x="1.5" y="1.5" width="9" height="9" rx="1.6" stroke="currentColor" stroke-width="1.3" />
+          </svg>
+        </button>
+        <button class="btn-icon danger" aria-label="Close" @click="win.close()">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <aside class="side">
+        <div class="side-scroll">
+          <!-- audio source -->
+          <Card :title="t('srcTitle')">
+            <div class="seg">
+              <button :class="{ on: sourceKind === 'mic' }" @click="sourceKind = 'mic'">{{ t("srcMic") }}</button>
+              <button :class="{ on: sourceKind === 'system' }" @click="sourceKind = 'system'">{{ t("srcSystem") }}</button>
+              <button :class="{ on: sourceKind === 'file' }" @click="sourceKind = 'file'">{{ t("srcFile") }}</button>
+            </div>
+
+            <template v-if="sourceKind !== 'file'">
+              <div class="row">
+                <Picker
+                  v-model="deviceId"
+                  :options="deviceOptions"
+                  :placeholder="t('noDevice')"
+                  :disabled="isRunning()"
+                />
+                <button class="btn-icon" :aria-label="t('device')" @click="refreshDevices">
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+                    <path d="M13 7.5a5.5 5.5 0 1 1-1.7-3.9M13 1.5V5H9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </div>
+              <div class="meter" :title="t('level')">
+                <i :style="{ transform: `scaleX(${Math.min(1, level * 1.6)})` }" />
+              </div>
+              <p v-if="inputTooQuiet" class="hint">{{ t("inputTooQuiet") }}</p>
+              <template v-if="recordableSource">
+                <label class="line">
+                  <span>{{ t(sourceKind === 'mic' ? "recordMic" : "recordSystem") }}</span>
+                  <button class="sw" role="switch" :aria-label="t(sourceKind === 'mic' ? 'recordMic' : 'recordSystem')" :aria-checked="recordEnabled" :class="{ on: recordEnabled }" :disabled="isRunning()" @click.prevent="recordEnabled = !recordEnabled" />
+                </label>
+                <div v-if="recordEnabled">
+                  <span class="mini">{{ t("recordFormat") }}</span>
+                  <div class="seg" role="group" :aria-label="t('recordFormat')">
+                    <button :aria-pressed="settings.recordFormat === 'wav'" :class="{ on: settings.recordFormat === 'wav' }" :disabled="isRunning()" @click="settings.recordFormat = 'wav'">WAV</button>
+                    <button :aria-pressed="settings.recordFormat === 'mp3'" :class="{ on: settings.recordFormat === 'mp3' }" :disabled="isRunning()" @click="settings.recordFormat = 'mp3'">MP3</button>
+                  </div>
+                </div>
+                <p class="hint">{{ t(sourceKind === 'mic' ? "recordMicHint" : "recordSystemHint") }}</p>
+                <div class="row recording-row">
+                  <span v-if="recordingState === 'recording'" class="hint">{{ t("recordingNow") }} {{ recordingFile }}</span>
+                  <span v-else-if="recordingState === 'saved'" class="hint">{{ t("recordingSaved") }} {{ recordingFile }}</span>
+                  <button class="chip" @click="openRecordingsDir">{{ t("historyDir") }}</button>
+                </div>
+                <p v-if="recordingError" class="err">{{ t("recordingFailed") }} {{ recordingError }}</p>
+              </template>
+              <p v-if="sourceKind === 'system' && !caps.loopback" class="hint notice">
+                {{ caps.os === "macos" ? t("loopbackMacOld") : t("loopbackLinux") }}
+              </p>
+            </template>
+
+            <template v-else>
+              <button class="btn drop" :disabled="isRunning()" @click="chooseFile">
+                <span v-if="fileName" class="fname">{{ fileName }}</span>
+                <span v-else>{{ t("pickFile") }}</span>
+              </button>
+              <small class="hint">{{ t("fileFormats") }}</small>
+              <div v-if="fileProgress" class="meter">
+                <i :style="{ transform: `scaleX(${fileProgress.total ? fileProgress.sent / fileProgress.total : 0.5})` }" />
+              </div>
+            </template>
+          </Card>
+
+          <!-- languages -->
+          <Card :title="t('langTitle')">
+            <!-- Only where the protocol can do it; elsewhere there is nothing to choose. -->
+            <div v-if="canTwoWay" class="seg">
+              <button :class="{ on: !settings.twoWay }" :disabled="isRunning()" @click="settings.twoWay = false">
+                {{ t("oneWay") }}
+              </button>
+              <button :class="{ on: settings.twoWay }" :disabled="isRunning()" @click="settings.twoWay = true">
+                {{ t("twoWay") }}
+              </button>
+            </div>
+
+            <!-- Two-way is Chinese–English and nothing else: shown, not chosen. The dot marks
+                 the side being spoken, from the language the server detects per sentence. -->
+            <template v-if="twoWay">
+              <div class="langs">
+                <div v-for="code in ['zh', 'en']" :key="code" class="col grow">
+                  <span class="mini">
+                    {{ langName(code, locale) }}
+                    <em v-if="detectedLang === code" class="detected">●</em>
+                  </span>
+                  <Picker
+                    :model-value="code"
+                    :options="[{ value: code, label: langName(code, locale) }]"
+                    disabled
+                  />
+                </div>
+              </div>
+              <p class="hint">{{ t("twoWayHint") }}</p>
+            </template>
+
+            <div v-else class="langs">
+              <div class="col grow">
+                <span class="mini">
+                  {{ t("from") }}
+                  <em v-if="settings.sourceLang === 'auto' && detectedLang" class="detected">
+                    {{ langName(detectedLang, locale) }}
+                  </em>
+                </span>
+                <!-- Detect-only services take no source language: nothing to pick, so no picker. -->
+                <div v-if="sourceMode === 'detected'" class="fixed-lang">{{ langName("auto", locale) }}</div>
+                <Picker v-else v-model="settings.sourceLang" :options="sourceLangOptions" :disabled="isRunning()" />
+              </div>
+              <button
+              <button
+                v-if="!transcribingOnly && sourceMode !== 'detected'"
+                class="btn-icon swap"
+                :aria-label="t('swap')"
+                :disabled="settings.sourceLang === 'auto' || isRunning()"
+                @click="[settings.sourceLang, settings.targetLang] = [settings.targetLang, settings.sourceLang]"
+              >
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+                  <path d="M4 2.5v10M4 12.5L1.8 10.3M4 12.5l2.2-2.2M11 12.5v-10M11 2.5L8.8 4.7M11 2.5l2.2 2.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <div v-if="!transcribingOnly" class="col grow">
+                <span class="mini">{{ t("to") }}</span>
+                <Picker v-model="settings.targetLang" :options="targetLangOptions" :disabled="isRunning()" />
+              </div>
+            </div>
+
+            <label v-if="settings.mode === 'local'" class="line">
+              <span>{{ t("transcribeOnly") }}</span>
+              <button class="sw" :class="{ on: settings.transcribeOnly }" :disabled="isRunning()" @click="settings.transcribeOnly = !settings.transcribeOnly" />
+            </label>
+            <p v-if="transcribingOnly" class="hint">{{ t("transcribeOnlyHint") }}</p>
+
+            <label v-if="!transcribingOnly" class="line">
+              <span>{{ t("speak") }}</span>
+              <button
+                class="sw"
+                :class="{ on: settings.speak && !speakBlocked }"
+                :disabled="isRunning() || !!speakBlocked"
+                @click="settings.speak = !settings.speak"
+              />
+            </label>
+            <p v-if="!transcribingOnly && speakBlocked && (settings.speak || settings.mode === 'local')" class="hint">{{ t(speakBlocked) }}</p>
+            <template v-else-if="!transcribingOnly && settings.speak">
+              <!-- OpenAI and Gemini pick their own voice; there is nothing to choose. -->
+              <p v-if="!voiceList" class="hint">{{ t("voiceServer") }}</p>
+              <div v-else class="line">
+                <span>{{ t("voice") }}</span>
+                <Picker v-model="settings.voice" class="grow" :options="voiceOptions" :disabled="isRunning()" />
+              </div>
+              <p v-if="sourceKind === 'mic'" class="hint">{{ t("speakMic") }}</p>
+            </template>
+          </Card>
+
+          <!-- subtitle overlay -->
+          <Card :title="t('subTitle')">
+            <label class="line">
+              <span>{{ t("subShow") }}</span>
+              <button class="sw" :class="{ on: settings.sub.show }" @click="settings.sub.show = !settings.sub.show" />
+            </label>
+
+            <!-- Styling a window that is not on screen is guesswork; the controls follow it. -->
+            <template v-if="settings.sub.show">
+
+            <div v-if="!transcribingOnly" class="seg">
+              <button
+                v-for="[value, key] in subModes"
+                :key="value"
+                :class="{ on: settings.sub.mode === value }"
+                @click="settings.sub.mode = value"
+              >
+                {{ t(key) }}
+              </button>
+            </div>
+
+            <div class="line">
+              <span>{{ t("subOpacity") }}</span>
+              <Slider v-model="subOpacityPct" :min="0" :max="100" :step="1" unit="%" />
+            </div>
+
+            <div class="line">
+              <span>{{ t("subSrcSize") }}</span>
+              <Slider v-model="settings.sub.srcSize" v-bind="SUB_SLIDER" unit="px" />
+            </div>
+            <div v-if="!transcribingOnly" class="line">
+              <span>{{ t("subTgtSize") }}</span>
+              <Slider v-model="settings.sub.tgtSize" v-bind="SUB_SLIDER" unit="px" />
+            </div>
+
+            <div class="line">
+              <span>{{ t("subColors") }}</span>
+              <div class="row">
+                <input v-if="!transcribingOnly" v-model="settings.sub.color" type="color" :title="t('subColor')" />
+                <input v-model="settings.sub.srcColor" type="color" :title="t('subSrcColor')" />
+              </div>
+            </div>
+
+            <div class="line">
+              <span>{{ t("subAlign") }}</span>
+              <div class="seg icons">
+                <button
+                  v-for="[value, key, d] in subAligns"
+                  :key="value"
+                  :class="{ on: settings.sub.align === value }"
+                  :title="t(key)"
+                  :aria-label="t(key)"
+                  @click="settings.sub.align = value"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                    <path :d="d" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="line">
+              <span>{{ t("subHeight") }}</span>
+              <div class="seg">
+                <button :class="{ on: settings.sub.grow }" @click="settings.sub.grow = true">{{ t("subGrow") }}</button>
+                <button :class="{ on: !settings.sub.grow }" @click="settings.sub.grow = false">{{ t("subTicker") }}</button>
+              </div>
+            </div>
+
+            <div class="pair">
+              <label class="line">
+                <span>{{ t("subOutline") }}</span>
+                <button class="sw" :class="{ on: settings.sub.outline }" @click="settings.sub.outline = !settings.sub.outline" />
+              </label>
+              <label class="line">
+                <span>{{ t("subLockShort") }}</span>
+                <button class="sw" :class="{ on: settings.sub.locked }" @click="settings.sub.locked = !settings.sub.locked" />
+              </label>
+            </div>
+            </template>
+          </Card>
+        </div>
+
+        <footer class="dock">
+          <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
+          <p v-else-if="warnMsg" class="warn">{{ warnMsg }}</p>
+          <div v-if="settings.mode === 'local' && isRunning()" class="local-perf" :title="t('diagHint')">
+            <span class="local-perf-title">{{ t("diagTitle") }}</span>
+            <div class="local-perf-grid">
+              <span>{{ t("diagAsrBackend") }} <b>{{ t(backendLabel(localDiagnostics.asrBackend)) }}</b></span>
+              <span v-if="!transcribingOnly">{{ t("diagTranslationBackend") }} <b>{{ t(backendLabel(localDiagnostics.translationBackend)) }}</b></span>
+              <span>{{ t("diagAudioQueue") }} <b>{{ localDiagnostics.audioQueueMs === null ? "—" : `${(localDiagnostics.audioQueueMs / 1000).toFixed(1)}s` }}</b></span>
+              <span>{{ t("diagAsr") }} <b>{{ localDiagnostics.asrElapsedMs === null ? "—" : `${(localDiagnostics.asrElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+              <span v-if="!transcribingOnly">{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>
+              <span v-if="!transcribingOnly">{{ t("diagTranslation") }} <b>{{ localDiagnostics.translationElapsedMs === null ? "—" : `${(localDiagnostics.translationElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+              <span>{{ t("diagDropped") }} <b>{{ localDiagnostics.droppedChunks }}</b></span>
+            </div>
+          </div>
+          <button
+            class="go"
+            :class="{ running: isRunning() }"
+            :disabled="(!canStart && !isRunning()) || status === 'stopping'"
+            @click="toggle"
+          >
+            <span class="go-ring" />
+            <svg v-if="!isRunning()" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.6v10.8L13 8z" /></svg>
+            <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3.5" y="3.5" width="9" height="9" rx="2" /></svg>
+            {{ status === "stopping" ? t("statusStopping") : isRunning() ? t("stop") : t(transcribingOnly ? "startTranscription" : "start") }}
+          </button>
+        </footer>
+      </aside>
+
+      <!-- translation stream -->
+      <Card class="stream-card" :title="t(transcribingOnly ? 'transcriptionStreamTitle' : 'streamTitle')" flush>
+        <template #action>
+          <div class="row">
+            <button
+              class="sw sm"
+              :class="{ on: settings.history }"
+              :title="t('historyHint')"
+              :aria-label="t('historyRec')"
+              @click="settings.history = !settings.history"
+            />
+            <FontSize v-model:src="settings.stream.srcSize" v-model:tgt="settings.stream.tgtSize" :source-only="transcribingOnly" />
+            <button class="chip" @click="showHistory = true">{{ t("history") }}</button>
+            <button class="chip" :disabled="!lines.length && !rawLog.length" @click="lines = []; rawLog = []">{{ t("clear") }}</button>
+            <button class="chip" :disabled="!lines.length" @click="exportAs('txt')">{{ t("exportTxt") }}</button>
+            <button class="chip" :disabled="!lines.length" @click="exportAs('srt')">{{ t("exportSrt") }}</button>
+          </div>
+        </template>
+
+        <!-- The two rows are sized from CSS variables so one binding covers every line,
+             including the live one, without re-styling per item. -->
+        <div
+          ref="streamEl"
+          class="stream"
+          :style="{ '--src-fs': `${settings.stream.srcSize}px`, '--tgt-fs': `${settings.stream.tgtSize}px` }"
+        >
+          <p v-if="!lines.length && !current.target && !current.source" class="empty">{{ t(transcribingOnly ? "transcriptionStreamEmpty" : "streamEmpty") }}</p>
+
+          <article v-for="l in lines" :key="l.id" class="line-item">
+            <p v-if="l.source" class="src">{{ l.source }}</p>
+            <p v-if="l.target" class="tgt">{{ l.target }}</p>
+          </article>
+
+          <article
+            v-if="current.source || current.target || current.sourceStash || current.targetStash"
+            class="line-item live"
+          >
+            <p v-if="current.source || current.sourceStash" class="src">
+              {{ current.source }}<span class="stash">{{ current.sourceStash }}</span>
+            </p>
+            <p v-if="!transcribingOnly || current.target || current.targetStash" class="tgt">
+              {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />
+            </p>
+          </article>
+        </div>
+
+        <div v-if="showDiag" class="diag">
+          <div class="diag-head">rt://raw · {{ rawLog.length }}</div>
+          <pre>{{ rawLog.map((r) => JSON.stringify(r)).join("\n") }}</pre>
+        </div>
+      </Card>
+    </main>
+
+  </div>
+
+  <Settings v-if="showSettings" @close="showSettings = false" />
+  <About v-if="showAbout" @close="showAbout = false" />
+  <History v-if="showHistory" @close="showHistory = false" />
+</template>
+
+<style scoped>
+.shell {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  padding: 0 14px 14px;
+}
+
+/* ---------- titlebar ---------- */
+.titlebar { display: flex; align-items: center; gap: 8px; height: 52px; }
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 8px 4px 4px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  transition: background 0.2s;
+}
+.brand:hover { background: var(--shade); }
+/* No plate, no shadow: the mark is transparent artwork now, not a white icon tile. */
+.mark { width: 26px; height: auto; -webkit-user-drag: none; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-text strong { font-size: 13px; font-weight: 700; letter-spacing: -0.01em; }
+.brand-text small { font-size: 10px; color: var(--ink-3); }
+.brand-model:hover { color: var(--accent); }
+
+.pill {
+  display: flex; align-items: center; gap: 7px;
+  height: 26px; padding: 0 11px 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; color: var(--ink-2);
+}
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
+.pill.connecting .dot { background: #ffd60a; animation: blink 1s infinite; }
+.pill.connected .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.pill.error .dot { background: var(--danger); }
+@keyframes blink { 50% { opacity: 0.25; } }
+
+.locale { font-size: 12px; font-weight: 700; }
+.btn-icon.active { background: var(--shade); color: var(--accent); }
+.btn-icon.danger:hover { background: var(--danger); color: #fff; }
+.win-buttons { display: flex; gap: 2px; margin-left: 6px; }
+
+/* ---------- layout ---------- */
+.grid { display: grid; grid-template-columns: 336px 1fr; gap: 14px; min-height: 0; }
+/* The sidebar scrolls, the run button below it does not — it stays reachable whatever the
+   window height, and lets the stream column run all the way to the bottom edge. */
+.side { display: flex; flex-direction: column; min-height: 0; }
+.side-scroll {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  overflow-y: auto; padding-right: 4px; padding-bottom: 6px;
+  /* Fade the last few pixels so a clipped card reads as "scroll for more". */
+  mask-image: linear-gradient(#000 calc(100% - 18px), transparent);
+}
+.side-scroll > * { flex: none; }
+
+.mini { font-size: 11px; font-weight: 600; color: var(--ink-3); margin-bottom: 5px; }
+/* <p> margins on top of the card gap left hints floating; the gap alone spaces them. */
+.hint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+.hint + .hint { margin-top: -6px; }
+.notice {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: rgba(255, 214, 10, 0.14);
+}
+
+.line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; cursor: pointer; }
+.recording-row { justify-content: space-between; }
+.recording-row .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pair .line { gap: 6px; }
+.seg.icons > button { display: flex; align-items: center; justify-content: center; }
+
+.langs { display: flex; align-items: flex-end; gap: 8px; }
+.swap { margin-bottom: 2px; }
+/* Same height as a Picker so the row stays aligned, but no field chrome: it is not a control. */
+.fixed-lang { height: 38px; display: flex; align-items: center; font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
+.swap:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.meter { height: 6px; border-radius: 3px; background: var(--shade); overflow: hidden; }
+.meter > i {
+  display: block; height: 100%; width: 100%;
+  background: linear-gradient(90deg, var(--ok), #ffd60a 70%, var(--danger));
+  transform-origin: left;
+  transform: scaleX(0);
+  transition: transform 0.08s linear;
+}
+
+.drop { height: 64px; border-style: dashed; border-width: 1.5px; font-weight: 500; }
+.fname { font-weight: 600; word-break: break-all; }
+
+.upd {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  white-space: nowrap;
+  transition: filter 0.2s;
+}
+.upd:hover { filter: brightness(1.1); }
+
+/* ---------- stream ---------- */
+.stream-card { min-height: 0; }
+
+.stream {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 4px 20px 20px;
+  display: flex; flex-direction: column; gap: 16px;
+  scrollbar-gutter: stable;
+}
+.empty { margin: auto; color: var(--ink-3); font-size: 13.5px; text-align: center; max-width: 26ch; line-height: 1.6; }
+
+.line-item { animation: slidein 0.35s var(--ease); }
+@keyframes slidein { from { opacity: 0; transform: translateY(8px); } }
+.src { margin: 0 0 3px; font-size: var(--src-fs, 13px); line-height: 1.55; color: var(--ink-3); white-space: pre-line; user-select: text; }
+.tgt { margin: 0; font-size: var(--tgt-fs, 16.5px); line-height: 1.55; font-weight: 600; letter-spacing: -0.005em; user-select: text; }
+.live .tgt { color: var(--accent); }
+
+/* The model's tentative continuation: shown, but visibly not final yet. */
+.stash { opacity: 0.45; font-weight: 500; }
+
+.detected {
+  font-style: normal;
+  margin-left: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--accent);
+  background: rgba(10, 132, 255, 0.12);
+}
+
+.caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 3px;
+  vertical-align: -0.13em; border-radius: 1px; background: currentColor;
+  animation: blink 1.05s steps(2) infinite;
+}
+
+.diag {
+  flex: none; max-height: 180px; overflow: auto;
+  border-top: 1px solid var(--hairline);
+  background: var(--shade);
+}
+.diag-head { position: sticky; top: 0; padding: 6px 14px; font-size: 10.5px; font-weight: 700; color: var(--ink-3); background: inherit; backdrop-filter: blur(8px); }
+.diag pre {
+  margin: 0; padding: 0 14px 12px;
+  font-family: "SF Mono", "Cascadia Code", ui-monospace, monospace;
+  font-size: 10.5px; line-height: 1.5; color: var(--ink-2);
+  white-space: pre-wrap; word-break: break-all; user-select: text;
+}
+
+/* ---------- dock ---------- */
+.dock { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 4px 0 0; }
+
+.local-perf { padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 10px; color: var(--ink-2); background: var(--shade); }
+.local-perf-title { display: block; margin-bottom: 5px; font-size: 10.5px; font-weight: 700; }
+.local-perf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; font-size: 10.5px; }
+.local-perf-grid span { display: flex; justify-content: space-between; gap: 5px; }
+.local-perf-grid b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.go {
+  position: relative;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  width: 100%; height: 46px; padding: 0 30px;
+  border-radius: 999px;
+  font-size: 14.5px; font-weight: 700; color: #fff;
+  background: var(--accent-grad);
+  box-shadow: 0 12px 30px -10px rgba(10, 132, 255, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  transition: transform 0.24s var(--ease), filter 0.24s, box-shadow 0.24s;
+}
+.go:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.go:active:not(:disabled) { transform: scale(0.96); }
+.go:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+.go.running { background: linear-gradient(135deg, #ff453a, #ff2d55); box-shadow: 0 12px 30px -10px rgba(255, 69, 58, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.4); }
+
+.go-ring {
+  position: absolute; inset: -4px;
+  border-radius: 999px; border: 2px solid currentColor;
+  opacity: 0; pointer-events: none;
+}
+.go.running .go-ring { animation: breathe 1.9s var(--ease) infinite; }
+@keyframes breathe {
+  0% { opacity: 0.5; transform: scale(1); }
+  70%, 100% { opacity: 0; transform: scale(1.14); }
+}
+
+@media (max-width: 1040px) {
+  .grid { grid-template-columns: 300px 1fr; }
+}
+</style>

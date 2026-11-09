@@ -7,15 +7,16 @@ mod local;
 mod player;
 mod recording;
 pub mod realtime;
-pub mod pulse;
 pub mod resample;
 pub mod volc;
 mod secret;
-#[cfg(target_os = "macos")]
-mod tap;
+// Tray icons are a desktop concept. Mobile gets the same command surface backed by
+// no-ops, so the frontend can keep calling sync_tray without a platform check.
+#[cfg(not(target_os = "android"))]
 mod tray;
-#[cfg(windows)]
-mod wasapi;
+#[cfg(target_os = "android")]
+#[path = "tray_stub.rs"]
+mod tray;
 
 use audio::DeviceInfo;
 use config::{ExecutionMode, Protocol, Settings};
@@ -33,8 +34,66 @@ pub struct AppState {
     capture: Mutex<Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>>,
     exiting: AtomicBool,
     level: audio::InputLevel,
+    task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    health: Mutex<SessionHealth>,
     #[cfg(any(target_os = "macos", windows))]
     local_models: Arc<Mutex<local::LocalModelCache>>,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHealth {
+    status: String,
+    phase: String,
+    audio_ms: u64,
+    server_event: String,
+    error: String,
+}
+
+impl SessionHealth {
+    fn event(&mut self, kind: &str, text: &str) {
+        match kind {
+            "status" if text != "closed" || self.status != "error" => self.status = text.into(),
+            "phase" => self.phase = text.into(),
+            "audio" => self.audio_ms = text.parse().unwrap_or(self.audio_ms),
+            "error" => { self.error = text.into(); self.status = "error".into(); }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_health_tests {
+    use super::*;
+
+    #[test]
+    fn polling_retains_errors_after_the_connection_task_closes() {
+        let mut health = SessionHealth::default();
+        health.event("status", "connecting");
+        health.event("phase", "network");
+        health.event("error", "TLS connection failed");
+        health.event("status", "closed");
+        assert_eq!(health.status, "error");
+        assert_eq!(health.phase, "network");
+        assert_eq!(health.error, "TLS connection failed");
+        health.event("audio", "1200");
+        health.event("audio", "invalid");
+        assert_eq!(health.audio_ms, 1200);
+    }
+
+    #[test]
+    fn android_tls_configuration_has_a_crypto_provider() {
+        // Use the same provider/features selected by the Android target. The old
+        // dependency only enabled root certificates and panicked at builder().
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty()).with_no_client_auth();
+    }
+}
+
+#[tauri::command]
+async fn session_health(state: State<'_, AppState>) -> Result<SessionHealth, String> {
+    state.health.lock().map(|health| health.clone()).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +212,14 @@ fn open_recordings_dir(app: AppHandle) -> Result<(), String> {
     app.opener().open_path(dir, None::<&str>).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn probe_audio(state: State<'_, AppState>, id: String) -> Result<usize, String> {
+    if state.running.lock().map_err(|e| e.to_string())?.as_ref().is_some_and(|s| !s.load(Ordering::Relaxed)) {
+        return Err("stop the current session before testing the microphone".into());
+    }
+    audio::probe(id).await.map_err(|e| e.to_string())
+}
+
 /// Shown read-only in Settings so it is obvious which host the app will dial.
 #[tauri::command]
 fn endpoint_url(settings: Settings) -> String {
@@ -168,6 +235,9 @@ async fn start_stream(
     target_language_name: String,
 ) -> Result<(), String> {
     halt(&state);
+    *state.health.lock().unwrap() = SessionHealth::default();
+    realtime::note(&app, "status", "connecting");
+    realtime::note(&app, "phase", "capture");
 
     #[cfg(target_os = "linux")]
     if settings.mode == ExecutionMode::Local {
@@ -202,7 +272,7 @@ async fn start_stream(
     // Before capture: on macOS the process has to be a Core Audio client already for the
     // capture to be able to exclude it.
     let player = if settings.mode == ExecutionMode::Remote && settings.speak {
-        Some(player::Player::start().map_err(|e| e.to_string())?)
+        Some(player::Player::start(&settings.output).map_err(|e| e.to_string())?)
     } else {
         None
     };
@@ -330,21 +400,14 @@ async fn start_stream(
             finish_session(&app2, &stop2);
         });
     } else {
+        // Remote: the capture is ready now. Hand the socket over; the session owns it until
+        // its end, and `finish_session` clears the stop flag on completion.
         let app2 = app.clone();
         let stop2 = stop.clone();
-        tauri::async_runtime::spawn(async move {
+        *state.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             realtime::run(app, settings, rx, stop, player).await;
             finish_session(&app2, &stop2);
-        });
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let app2 = app.clone();
-        let stop2 = stop.clone();
-        tauri::async_runtime::spawn(async move {
-            realtime::run(app, settings, rx, stop, player).await;
-            finish_session(&app2, &stop2);
-        });
+        }));
     }
     Ok(())
 }
@@ -357,12 +420,22 @@ fn write_text(path: String, contents: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn stop_stream(state: State<AppState>) {
-    halt(&state);
+async fn stop_stream(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    request_stop(&state);
+    // Cancellation before readiness needs no server drain and no final transcript.
+    // Abort the socket task as well as signalling it, then make the result queryable.
+    let status = state.health.lock().unwrap().status.clone();
+    if status == "connecting" {
+        if let Some(task) = state.task.lock().unwrap().take() { task.abort(); }
+        realtime::note(&app, "status", "closed");
+    } else if status == "connected" {
+        realtime::note(&app, "status", "stopping");
+    }
+    Ok(())
 }
 
-fn halt(state: &State<AppState>) {
-    if let Some(stop) = state.running.lock().unwrap().take() {
+fn request_stop(state: &State<AppState>) {
+    if let Some(stop) = state.running.lock().unwrap().as_ref() {
         stop.store(true, Ordering::Relaxed);
         join_capture(state, &stop);
     }
@@ -425,15 +498,30 @@ fn configure_metal_backend() {
     std::env::set_var("GGML_METAL_NO_RESIDENCY", "1");
 }
 
+fn halt(state: &State<AppState>) {
+    request_stop(state);
+    state.running.lock().unwrap().take();
+    if let Some(task) = state.task.lock().unwrap().take() { task.abort(); }
+}
+
+/* ---------- phone shell ---------- */
+// The permission/status/device-name/picker surface lives in the Kotlin bridge
+// (src-tauri/android/MainActivity.kt, window.ReaLingoAndroid), not here: Tauri's
+// AppHandle has no stable Activity accessor for the JNI round, and the bridge is how
+// LittleLobby ships the same features. src/mobile/perms.ts calls the bridge directly.
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "macos")]
     configure_metal_backend();
+    #[cfg(target_os = "android")]
+    let _ = rustls::crypto::ring::default_provider().install_default();
     // WebKitGTK's DMA-BUF renderer produces nothing on software GL (VMs) and on some
     // proprietary drivers: the window is created and focused but never painted, which with
     // `transparent: true` looks like the app failed to start. Losing the DMA-BUF path costs
     // a buffer copy; losing the whole UI costs the app. Respect an explicit override.
-    #[cfg(target_os = "linux")]
+    // This workaround is specific to desktop Linux's WebKitGTK renderer.
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
@@ -445,10 +533,15 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             // The overlay is declared in tauri.conf.json but starts hidden; the main window
-            // shows it on demand.
+            // shows it on demand. Z-order belongs to the window manager, so the call is
+            // desktop-only (tauri gates it with cfg(desktop)); the mobile overlay (phase 2)
+            // would use a system overlay window instead.
+            #[cfg(desktop)]
             if let Some(w) = app.get_webview_window("subtitle") {
                 let _ = w.set_always_on_top(true);
             }
+            // tauri.android.conf.json declares only main. Closing an extra mobile window
+            // here is too late: the platform has already created its Activity/WebView.
             tray::init(app.handle())?;
             Ok(())
         })
@@ -471,6 +564,8 @@ pub fn run() {
             default_device,
             input_level,
             open_recordings_dir,
+            session_health,
+            probe_audio,
             endpoint_url,
             start_stream,
             stop_stream,
@@ -483,7 +578,8 @@ pub fn run() {
             history::history_clear,
             history::history_open_dir,
             history::history_dir,
-            tray::sync_tray
+            tray::sync_tray,
+            player::output_kinds
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

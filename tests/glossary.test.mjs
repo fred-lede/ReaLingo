@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deleteGlossary, migrateGlossary, upsertGlossary } from '../src/glossary.ts';
+import { deleteGlossary, migrateGlossary, upsertGlossary } from '../src/core/glossary.ts';
 
 const codes = new Set(['zh', 'en']);
 const lora = { source: 'LoRA', aliases: ['Loari'], target: '低秩适配', targetLang: 'zh' };
