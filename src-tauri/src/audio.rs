@@ -317,8 +317,10 @@ impl InputLevel {
     }
 
     /// The level of the input, smoothed so the meter and the warning do not flicker.
+    /// The smoothing is over a couple of seconds, so the silence between words does not
+    /// read as a muted microphone.
     pub fn store_rms(&self, rms: f32) {
-        let smoothed = self.rms() * 0.8 + rms * 0.2;
+        let smoothed = self.rms() * 0.95 + rms * 0.05;
         self.rms.store(smoothed.to_bits(), Ordering::Relaxed);
     }
 
@@ -367,13 +369,15 @@ impl Pipe {
 
         let peak = self.mono.iter().fold(0f32, |m, s| m.max(s.abs()));
         self.level.store_peak(peak);
-        // The RMS of what is actually being sent, not of the loudest instant in it.
-        let mean = self.mono.iter().map(|s| s * s).sum::<f32>() / self.mono.len().max(1) as f32;
-        self.level.store_rms(mean.sqrt());
 
         self.resampler.push(&self.mono, &mut self.pcm);
         while self.pcm.len() >= self.chunk {
             let chunk: Vec<i16> = self.pcm.drain(..self.chunk).collect();
+            // The level of what is actually sent, not of the loudest instant in it: this
+            // is the audio the service will hear.
+            let mean = chunk.iter().map(|&s| (s as f32 / 32768.0).powi(2)).sum::<f32>()
+                / chunk.len().max(1) as f32;
+            self.level.store_rms(mean.sqrt());
             // Never block the audio thread: if the uplink is backed up, drop the chunk.
             if let Err(error) = self.tx.try_send(chunk) {
                 if matches!(error, tokio::sync::mpsc::error::TrySendError::Full(_)) {
@@ -409,6 +413,35 @@ mod tests {
         pipe.feed(&vec![0.25; 3_200]);
         assert_eq!(rx.try_recv().unwrap().len(), 1_600);
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn the_smoothed_rms_holds_through_a_pause() {
+        // A half second of silence between words is ordinary speech, not a mute: the
+        // reading has to survive it, or the warning flickers between every sentence.
+        let level = InputLevel::new();
+        for _ in 0..100 {
+            level.store_rms(0.01);
+        }
+        for _ in 0..5 {
+            level.store_rms(0.0);
+        }
+        assert!(level.rms() > 0.005, "a pause must not empty the reading: {}", level.rms());
+    }
+
+    #[test]
+    fn the_rms_is_measured_on_the_audio_that_is_sent() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let level = InputLevel::new();
+        let mut pipe = Pipe::new(16_000, 1, 16_000, tx, level.clone(), Arc::new(AtomicU64::new(0)));
+        // A quarter of full scale, for long enough for the smoothed reading to settle.
+        let amplitude = 0.25_f32;
+        for _ in 0..200 {
+            pipe.feed(&vec![amplitude; 1_600]);
+        }
+        let sent = rx.try_recv().expect("a chunk should have been sent");
+        let sent_rms = (sent.iter().map(|&s| (s as f32 / 32768.0).powi(2)).sum::<f32>() / sent.len() as f32).sqrt();
+        assert!((level.rms() - sent_rms).abs() < 0.01, "level {} vs sent {}", level.rms(), sent_rms);
     }
 
     #[test]
