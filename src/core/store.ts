@@ -76,6 +76,7 @@ export interface Settings {
   transcribeOnly: boolean;
   translationPace: TranslationPace;
   whisperModelPath: string;
+  sensevoiceModelPath: string;
   translationModelPath: string;
   protocol: Protocol;
   apiKey: string;
@@ -128,6 +129,7 @@ export const settings = reactive<Settings>({
   transcribeOnly: false,
   translationPace: "fast",
   whisperModelPath: "",
+  sensevoiceModelPath: "",
   translationModelPath: "",
   protocol: "qwen38",
   apiKey: "",

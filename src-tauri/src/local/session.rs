@@ -1,4 +1,4 @@
-use super::{asr::SubtitleSegment, glossary::GlossaryMatcher, LocalModels, LocalTranslator, WhisperEngine};
+use super::{asr::SubtitleSegment, glossary::GlossaryMatcher, AsrEngine, LocalModels, LocalTranslator};
 use super::backend_status::BackendStatus;
 use crate::{
     config::{Settings, TranslationPace},
@@ -42,7 +42,7 @@ fn initial_backend_events(asr: BackendStatus, translation: Option<BackendStatus>
         .collect()
 }
 
-fn report_asr_backend(app: &AppHandle, asr: &WhisperEngine, last_reported: &mut BackendStatus) {
+fn report_asr_backend(app: &AppHandle, asr: &dyn AsrEngine, last_reported: &mut BackendStatus) {
     let current = asr.backend_status();
     if current != BackendStatus::Detecting && current != *last_reported {
         let _ = app.emit(realtime::RAW_EVENT, backend_event("asr", current));
@@ -360,13 +360,13 @@ impl LocalSession {
         realtime::note(app, "status", "connecting");
         realtime::note(app, "status", "connected");
         let translation_backend = if settings.transcribe_only { None } else { models.translator.as_ref().map(LocalTranslator::backend_status) };
-        for event in initial_backend_events(models.asr.backend_status(), translation_backend) {
+        for event in initial_backend_events((*models.asr).backend_status(), translation_backend) {
             let _ = app.emit(realtime::RAW_EVENT, event);
         }
         let matcher = GlossaryMatcher::new(&settings.glossary, &settings.target_lang)?;
         let (translation_tx, translation_rx) = std::sync::mpsc::channel();
         let (group_tx, group_rx) = std::sync::mpsc::channel();
-        let (asr, translator) = (&models.asr, &mut models.translator);
+        let (asr, translator) = (models.asr.as_ref(), &mut models.translator);
         std::thread::scope(|scope| {
             let translation_matcher = &matcher;
             let translation = if settings.transcribe_only {
@@ -404,7 +404,7 @@ impl LocalSession {
         live_capture: bool,
         audio_rx: &mut Receiver<Vec<i16>>,
         stop: &Arc<AtomicBool>,
-        asr: &WhisperEngine,
+        asr: &dyn AsrEngine,
         matcher: &GlossaryMatcher,
         group_tx: &Sender<GroupMessage>,
     ) -> Result<(), String> {
@@ -582,7 +582,7 @@ impl LocalSession {
     fn process_window(
         app: &AppHandle,
         settings: &Settings,
-        asr: &WhisperEngine,
+        asr: &dyn AsrEngine,
         matcher: &GlossaryMatcher,
         group_tx: &Sender<GroupMessage>,
         window: TranscriptionWindow,

@@ -9,6 +9,26 @@ pub struct SubtitleSegment {
     pub text: String,
 }
 
+/// One local transcription backend. Whisper and SenseVoice are two
+/// implementations of the same offline window-to-text call, so the session
+/// loop only sees this trait and never the concrete engine.
+pub trait AsrEngine: Send {
+    /// Which backend this engine reports in the diagnostics drawer.
+    fn backend_status(&self) -> BackendStatus;
+
+    /// Transcribe one VAD window. `language` is the forced language ("auto" is
+    /// already filtered by the caller), `offset_ms` places the result on the
+    /// input-audio clock, and `clip_after_ms` says how far of the window is
+    /// already committed, so the engine can hand back only the new tail.
+    fn transcribe_samples(
+        &self,
+        samples: &[f32],
+        language: Option<&str>,
+        offset_ms: i64,
+        clip_after_ms: Option<i64>,
+    ) -> Result<Vec<SubtitleSegment>, String>;
+}
+
 struct TimedPiece {
     end_ms: i64,
     bytes: Vec<u8>,
@@ -77,10 +97,6 @@ impl WhisperEngine {
         }
     }
 
-    pub fn backend_status(&self) -> BackendStatus {
-        *self.backend.lock().unwrap()
-    }
-
     pub fn transcribe_samples(
         &self,
         samples: &[f32],
@@ -140,6 +156,26 @@ impl WhisperEngine {
             .collect())
     }
 }
+
+
+
+
+impl AsrEngine for WhisperEngine {
+    fn backend_status(&self) -> BackendStatus {
+        *self.backend.lock().unwrap()
+    }
+
+    fn transcribe_samples(
+        &self,
+        samples: &[f32],
+        language: Option<&str>,
+        offset_ms: i64,
+        clip_after_ms: Option<i64>,
+    ) -> Result<Vec<SubtitleSegment>, String> {
+        WhisperEngine::transcribe_samples(self, samples, language, offset_ms, clip_after_ms)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

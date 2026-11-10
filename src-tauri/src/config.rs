@@ -155,6 +155,8 @@ pub struct Settings {
     #[serde(default)]
     pub whisper_model_path: String,
     #[serde(default)]
+    pub sensevoice_model_path: String,
+    #[serde(default)]
     pub translation_model_path: String,
     /// Phone only: where the voice plays: "" (the system's choice), "speaker", "earpiece"
     /// or "headphones". See `player::output_kinds`.
@@ -164,6 +166,26 @@ pub struct Settings {
     /// Translate both ways between the two languages. Only Volc (Chinese–English) does.
     #[serde(default)]
     pub two_way: bool,
+}
+
+impl Settings {
+    /// Which local ASR engine: Whisper (GPU-capable) or SenseVoice (fast CPU).
+    pub fn asr_backend(&self) -> crate::local::AsrBackend {
+        if self.sensevoice_model_path.is_empty() {
+            crate::local::AsrBackend::Whisper
+        } else {
+            crate::local::AsrBackend::SenseVoice
+        }
+    }
+
+    /// The ASR model path for the selected backend.
+    pub fn asr_model_path(&self) -> &str {
+        if self.asr_backend() == crate::local::AsrBackend::SenseVoice {
+            &self.sensevoice_model_path
+        } else {
+            &self.whisper_model_path
+        }
+    }
 }
 
 fn auto() -> String {
@@ -579,6 +601,7 @@ mod tests {
             speak: false,
             voice: VOICE.into(),
             whisper_model_path: String::new(),
+            sensevoice_model_path: String::new(),
             translation_model_path: String::new(),
             output: String::new(),
 

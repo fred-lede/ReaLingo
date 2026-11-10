@@ -35,7 +35,24 @@ const paceOptions = computed(() => [
   { value: "complete", label: t("paceComplete") },
 ]);
 const pacePick = computed({ get: () => settings.translationPace, set: (value: string) => { settings.translationPace = value as TranslationPace; } });
-async function chooseModel(kind: "whisper" | "translation") {
+const asrEngineOptions = computed(() => [
+  { value: "whisper", label: "Whisper" },
+  { value: "sensevoice", label: "SenseVoice" },
+]);
+const asrEnginePick = computed({
+  get: () => (settings.sensevoiceModelPath ? "sensevoice" : "whisper"),
+  set: (value: string) => {
+    if (value === "whisper" && !settings.whisperModelPath) {
+      settings.sensevoiceModelPath = "";
+    }
+  },
+});
+async function chooseModel(kind: "whisper" | "sensevoice" | "translation") {
+  if (kind === "sensevoice") {
+    const dir = await openDialog({ multiple: false, directory: true });
+    if (typeof dir === "string") settings.sensevoiceModelPath = dir;
+    return;
+  }
   const path = await openDialog({ multiple: false, directory: false, filters: [{ name: kind === "whisper" ? "Whisper model" : "GGUF model", extensions: [kind === "whisper" ? "bin" : "gguf"] }] });
   if (typeof path === "string") settings[kind === "whisper" ? "whisperModelPath" : "translationModelPath"] = path;
 }
@@ -158,9 +175,18 @@ const advancedOpen = !!settings.url;
 
       <template v-if="settings.mode === 'local'">
         <div class="field">
+          <span class="label">ASR</span>
+          <Picker v-model="asrEnginePick" :options="asrEngineOptions" :disabled="isRunning()" />
+        </div>
+        <div class="field">
           <span class="label">{{ t("whisperModel") }}</span>
           <code class="endpoint">{{ settings.whisperModelPath || t("modelNotSelected") }}</code>
           <button class="link" :disabled="isRunning()" @click="chooseModel('whisper')">{{ t("chooseModel") }}</button>
+        </div>
+        <div class="field">
+          <span class="label">SenseVoice</span>
+          <code class="endpoint">{{ settings.sensevoiceModelPath || t("modelNotSelected") }}</code>
+          <button class="link" :disabled="isRunning()" @click="chooseModel('sensevoice')">{{ t("chooseModel") }}</button>
         </div>
         <div v-if="!settings.transcribeOnly" class="field">
           <span class="label">{{ t("translationModel") }}</span>

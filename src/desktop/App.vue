@@ -257,7 +257,10 @@ const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) =
 const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
 /** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
 const modelLabel = computed(() => settings.mode === "local"
-  ? (transcribingOnly.value ? settings.whisperModelPath : settings.translationModelPath).split(/[\\/]/).pop() || t("modeLocal")
+  ? (transcribingOnly.value
+      ? (settings.sensevoiceModelPath ? "SenseVoice" : settings.whisperModelPath.split(/[\\/]/).pop())
+      : settings.translationModelPath.split(/[\\/]/).pop())
+    || t("modeLocal")
   : modelName(settings.protocol, settings.model));
 
 /** The picker matches on both UI languages, so a zh user can still type "japanese". */
