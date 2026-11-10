@@ -17,9 +17,16 @@ use tokio::sync::mpsc::Receiver;
 
 const RATE: usize = 16_000;
 const HOP: usize = RATE * 2;
-const MAX_PENDING: usize = RATE * 16;
+// SenseVoice re-decodes the whole open window every hop, so a long window is
+// wasted re-inference; 10 s is enough for a sentence and keeps the overlap
+// small enough that the commit cursor advances each hop instead of stalling.
+const MAX_PENDING: usize = RATE * 10;
 const PREROLL: usize = RATE / 2;
-const VAD_END_SILENCE_CS: f32 = 60.0;
+// SenseVoice decides commit on its own text (a clause ending), so the VAD
+// only needs to close the window at a natural pause. 60 cs made the window
+// stay open across ordinary mid-sentence breaths, which is what let it grow
+// to the 16 s cap before anything committed.
+const VAD_END_SILENCE_CS: f32 = 100.0;
 // Suppress only a long, nearly silent tail after capture stops (about -50 dBFS).
 const QUIET_FLUSH_RMS_PCM: f64 = 104.0;
 const AUDIBLE_BLOCK_RMS_PCM: f64 = 184.0;

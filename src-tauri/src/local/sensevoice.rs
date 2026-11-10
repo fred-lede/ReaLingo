@@ -104,44 +104,47 @@ impl AsrEngine for SenseVoiceEngine {
             return Ok(Vec::new());
         }
 
-        // SenseVoice reports per-token timestamps; the window's span is the
-        // first and last of them. When the model does not give any (older
-        // bundles), the window length is the span.
-        let times_ms: Vec<i64> = result
-            .timestamps
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .map(|seconds| (seconds * 1000.0) as i64)
-            .collect();
+        // The session may already have committed past the start of this
+        // window (the VAD kept it open across a short pause, so the two
+        // engines re-transcribe the overlap). Keep only the fresh text:
+        // the fraction of the window that lies past the commit cursor,
+        // measured on the audio clock — never on the model's own
+        // timestamps, which are relative to the window and do not track
+        // how much of it is new.
         let window_ms = samples.len() as i64 * 1000 / 16_000;
-        let start_ms = offset_ms + times_ms.first().copied().unwrap_or(0);
-        let end_ms = offset_ms + times_ms.last().copied().unwrap_or(window_ms);
-
-        // The session may already have committed past the middle of this
-        // window (the VAD kept it open across a short pause). SenseVoice
-        // has no token-level clipping, so cut the text proportionally to
-        // how far of the window is new speech.
-        if let Some(cursor) = clip_after_ms {
-            if cursor >= end_ms {
+        if let Some(cursor) = clip_after_ms.filter(|cursor| *cursor >= 0) {
+            let fresh = window_ms - (cursor.saturating_sub(offset_ms).min(window_ms));
+            if fresh * 4 < window_ms {
+                // Less than a quarter of the window is new speech: the
+                // overlap dominates, and the tail will come back in the
+                // next, shorter window. Committing it here would stall
+                // the commit cursor for a stretch of audio that is
+                // already committed.
                 return Ok(Vec::new());
             }
-            if cursor > start_ms {
-                let kept = (end_ms - cursor).max(0) as f64 / window_ms.max(1) as f64;
-                if kept < 0.5 {
-                    // The committed part is the majority of the window; the
-                    // fresh tail is too short to be its own row.
-                    return Ok(Vec::new());
-                }
-                let chars = text.chars().count();
-                let cut = (chars as f64 * (1.0 - kept)) as usize;
-                text = text.chars().skip(cut).collect::<String>();
-                if text.trim().is_empty() {
-                    return Ok(Vec::new());
-                }
+            let kept_chars = (text.chars().count() as f64 * fresh as f64 / window_ms as f64)
+                .max(1.0) as usize;
+            text = text.chars().rev().take(kept_chars).collect::<Vec<_>>().iter().rev().collect();
+            if text.trim().is_empty() {
+                return Ok(Vec::new());
             }
         }
-        Ok(vec![SubtitleSegment { start_ms, end_ms, text }])
+        // The model reports when each token landed, on the window clock.
+        // The last one is where the speech actually ends — not where the
+        // (possibly much longer) window does. The commit cursor and the
+        // stability margin are both on this clock, so the segment's span
+        // has to be the speech span.
+        let last_token_ms = result
+            .timestamps
+            .as_deref()
+            .and_then(|ts| ts.last())
+            .map(|seconds| (seconds * 1000.0) as i64)
+            .unwrap_or(window_ms.saturating_sub(2_000));
+        Ok(vec![SubtitleSegment {
+            start_ms: offset_ms,
+            end_ms: (offset_ms + last_token_ms).max(offset_ms + 100),
+            text,
+        }])
     }
 }
 

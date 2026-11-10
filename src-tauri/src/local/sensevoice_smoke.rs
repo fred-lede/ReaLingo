@@ -37,5 +37,9 @@ mod sensevoice_smoke {
             .expect("transcription should succeed");
         assert_eq!(segments_en.len(), 1, "one window, one segment: {segments_en:?}");
         eprintln!("en.wav -> {}", segments_en[0].text);
+
+        // The int8 bundle reports per-token timestamps; confirm the engine's
+        // segment spans the audio, not just the text.
+        eprintln!("zh span: {} .. {} ms", segments[0].start_ms, segments[0].end_ms);
     }
 }
