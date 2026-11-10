@@ -68,14 +68,10 @@ impl LocalModelCache {
 }
 
 impl AsrBackend {
-    /// Pick the engine from the loaded settings: SenseVoice when a model
-    /// path is set for it, otherwise fall back to Whisper.
+    /// The engine the settings point at: the explicit `asr_engine` choice,
+    /// falling back to whichever model path is filled in.
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
-        if settings.sensevoice_model_path.is_empty() {
-            AsrBackend::Whisper
-        } else {
-            AsrBackend::SenseVoice
-        }
+        settings.asr_backend()
     }
 }
 

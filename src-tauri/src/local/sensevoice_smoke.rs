@@ -24,21 +24,18 @@ mod sensevoice_smoke {
         let segments = engine
             .transcribe_samples(wave.samples(), None, 0, None)
             .expect("transcription should succeed");
-        assert!(!segments.is_empty(), "expected at least one segment");
-        let text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
-        eprintln!("zh.wav -> {}", text);
+        // One window is transcribed as one segment — the whole text, not one
+        // per token. The grouping loop turns that into the sentence.
+        assert_eq!(segments.len(), 1, "one window, one segment: {segments:?}");
+        let text = &segments[0].text;
+        eprintln!("zh.wav -> {text}");
 
         let wave_en =
             sherpa_onnx::Wave::read(dir.join("en.wav").to_str().unwrap()).unwrap();
         let segments_en = engine
             .transcribe_samples(wave_en.samples(), None, 0, None)
             .expect("transcription should succeed");
-        let text_en = segments_en
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        eprintln!("en.wav -> {}", text_en);
-        assert!(!text_en.trim().is_empty());
+        assert_eq!(segments_en.len(), 1, "one window, one segment: {segments_en:?}");
+        eprintln!("en.wav -> {}", segments_en[0].text);
     }
 }

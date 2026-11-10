@@ -256,10 +256,14 @@ watch(() => settings.sub.locked, setOverlayClickThrough);
 const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) => l.code) : languageCodes(settings.protocol, settings.model));
 const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
 /** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
+/** The ASR model the local session uses; follows the explicit engine switch. */
+const asrEngineLabel = computed(() => {
+  const engine = settings.asrEngine || (settings.sensevoiceModelPath ? "sensevoice" : "whisper");
+  if (engine === "sensevoice") return "SenseVoice";
+  return settings.whisperModelPath.split(/[\\/]/).pop() || "Whisper";
+});
 const modelLabel = computed(() => settings.mode === "local"
-  ? (transcribingOnly.value
-      ? (settings.sensevoiceModelPath ? "SenseVoice" : settings.whisperModelPath.split(/[\\/]/).pop())
-      : settings.translationModelPath.split(/[\\/]/).pop())
+  ? (transcribingOnly.value ? asrEngineLabel.value : settings.translationModelPath.split(/[\\/]/).pop())
     || t("modeLocal")
   : modelName(settings.protocol, settings.model));
 

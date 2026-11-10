@@ -77,6 +77,8 @@ export interface Settings {
   translationPace: TranslationPace;
   whisperModelPath: string;
   sensevoiceModelPath: string;
+  /** "whisper" | "sensevoice"; empty = whatever has a model path set. */
+  asrEngine: "" | "whisper" | "sensevoice";
   translationModelPath: string;
   protocol: Protocol;
   apiKey: string;
@@ -130,6 +132,7 @@ export const settings = reactive<Settings>({
   translationPace: "fast",
   whisperModelPath: "",
   sensevoiceModelPath: "",
+  asrEngine: "",
   translationModelPath: "",
   protocol: "qwen38",
   apiKey: "",

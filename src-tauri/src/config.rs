@@ -156,6 +156,12 @@ pub struct Settings {
     pub whisper_model_path: String,
     #[serde(default)]
     pub sensevoice_model_path: String,
+    /// Which local ASR engine runs. Empty or "whisper" = Whisper,
+    /// "sensevoice" = the ONNX engine. Persisted so the picker's
+    /// choice survives a restart and the two model paths can both be
+    /// filled in without the other winning.
+    #[serde(default)]
+    pub asr_engine: String,
     #[serde(default)]
     pub translation_model_path: String,
     /// Phone only: where the voice plays: "" (the system's choice), "speaker", "earpiece"
@@ -170,11 +176,18 @@ pub struct Settings {
 
 impl Settings {
     /// Which local ASR engine: Whisper (GPU-capable) or SenseVoice (fast CPU).
+    /// Follows the explicit `asr_engine` choice; falls back to "which model
+    /// path is actually filled in" for settings written before the switch.
     pub fn asr_backend(&self) -> crate::local::AsrBackend {
-        if self.sensevoice_model_path.is_empty() {
-            crate::local::AsrBackend::Whisper
-        } else {
-            crate::local::AsrBackend::SenseVoice
+        match self.asr_engine.as_str() {
+            "sensevoice" => crate::local::AsrBackend::SenseVoice,
+            _ => {
+                if self.whisper_model_path.is_empty() && !self.sensevoice_model_path.is_empty() {
+                    crate::local::AsrBackend::SenseVoice
+                } else {
+                    crate::local::AsrBackend::Whisper
+                }
+            }
         }
     }
 
@@ -602,6 +615,7 @@ mod tests {
             voice: VOICE.into(),
             whisper_model_path: String::new(),
             sensevoice_model_path: String::new(),
+            asr_engine: String::new(),
             translation_model_path: String::new(),
             output: String::new(),
 

@@ -93,72 +93,55 @@ impl AsrEngine for SenseVoiceEngine {
             .get_result()
             .ok_or_else(|| "SenseVoice produced no result".to_string())?;
 
-        let text = result.text.trim().to_owned();
+        // The window is transcribed as one piece. Whisper's overlapping
+        // windows produce one or two segments each; SenseVoice's non-
+        // autoregressive decoder returns the whole window in one shot, so
+        // the contract is one segment per window with the full text. The
+        // grouping loop then turns the window into a sentence, which is
+        // what the subtitle row is built from.
+        let mut text = result.text.trim().to_owned();
         if text.is_empty() {
             return Ok(Vec::new());
         }
-        let tokens = result.tokens;
 
-        // SenseVoice reports one token per timestamp. Build the window-local
-        // segments and, when the session has already committed past the middle
-        // of this window, keep only the tail after the commit cursor — the
-        // same contract Whisper's token-timestamp clipping makes.
-        let token_times: Vec<i64> = result
+        // SenseVoice reports per-token timestamps; the window's span is the
+        // first and last of them. When the model does not give any (older
+        // bundles), the window length is the span.
+        let times_ms: Vec<i64> = result
             .timestamps
             .as_deref()
             .unwrap_or(&[])
             .iter()
-            .map(|seconds| (*seconds as i64) * 1000 + offset_ms)
+            .map(|seconds| (seconds * 1000.0) as i64)
             .collect();
+        let window_ms = samples.len() as i64 * 1000 / 16_000;
+        let start_ms = offset_ms + times_ms.first().copied().unwrap_or(0);
+        let end_ms = offset_ms + times_ms.last().copied().unwrap_or(window_ms);
 
-        // Even out the timestamps across the window when the model gives no
-        // per-token times (older bundles): better a monotone guess than all
-        // segments pinned to the window start.
-        let times: Vec<i64> = if !token_times.is_empty() {
-            token_times
-        } else {
-            let window_ms = samples.len() as i64 * 1000 / 16_000;
-            (0..tokens.len())
-                .map(|i| offset_ms + window_ms * (i as i64 + 1) / tokens.len() as i64)
-                .collect()
-        };
-
-        let mut out = Vec::new();
-        if tokens.len() <= 1 {
-            let end_ms = times.last().copied().unwrap_or(offset_ms);
-            if clip_after_ms.is_some_and(|cursor| end_ms <= cursor) {
-                return Ok(out);
+        // The session may already have committed past the middle of this
+        // window (the VAD kept it open across a short pause). SenseVoice
+        // has no token-level clipping, so cut the text proportionally to
+        // how far of the window is new speech.
+        if let Some(cursor) = clip_after_ms {
+            if cursor >= end_ms {
+                return Ok(Vec::new());
             }
-            out.push(SubtitleSegment { start_ms: offset_ms, end_ms, text });
-            return Ok(out);
-        }
-
-        // One segment per token: map each token's character span onto the text
-        // and take the next token's timestamp as this piece's end.
-        let mut chars_so_far = 0usize;
-        for (i, token) in tokens.iter().enumerate() {
-            let from = chars_so_far;
-            chars_so_far += token.chars().count();
-            let to = chars_so_far;
-            let piece = text.get(from..to).unwrap_or("").to_string();
-            if piece.trim().is_empty() {
-                continue;
+            if cursor > start_ms {
+                let kept = (end_ms - cursor).max(0) as f64 / window_ms.max(1) as f64;
+                if kept < 0.5 {
+                    // The committed part is the majority of the window; the
+                    // fresh tail is too short to be its own row.
+                    return Ok(Vec::new());
+                }
+                let chars = text.chars().count();
+                let cut = (chars as f64 * (1.0 - kept)) as usize;
+                text = text.chars().skip(cut).collect::<String>();
+                if text.trim().is_empty() {
+                    return Ok(Vec::new());
+                }
             }
-            let start_ms = times.get(i).copied().unwrap_or(offset_ms);
-            let end_ms = times.get(i + 1).copied().unwrap_or(start_ms);
-            if clip_after_ms.is_some_and(|cursor| end_ms <= cursor) {
-                continue;
-            }
-            out.push(SubtitleSegment { start_ms, end_ms, text: piece });
         }
-        if out.is_empty() {
-            out.push(SubtitleSegment {
-                start_ms: offset_ms,
-                end_ms: times.last().copied().unwrap_or(offset_ms),
-                text,
-            });
-        }
-        Ok(out)
+        Ok(vec![SubtitleSegment { start_ms, end_ms, text }])
     }
 }
 

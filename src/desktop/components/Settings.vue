@@ -39,22 +39,28 @@ const asrEngineOptions = computed(() => [
   { value: "whisper", label: "Whisper" },
   { value: "sensevoice", label: "SenseVoice" },
 ]);
+// The explicit switch: empty until the user picks one, then it wins over the
+// "which path is filled in" fallback in `asr_backend()`.
 const asrEnginePick = computed({
-  get: () => (settings.sensevoiceModelPath ? "sensevoice" : "whisper"),
+  get: () => settings.asrEngine || (settings.sensevoiceModelPath ? "sensevoice" : "whisper"),
   set: (value: string) => {
-    if (value === "whisper" && !settings.whisperModelPath) {
-      settings.sensevoiceModelPath = "";
-    }
+    settings.asrEngine = value as "whisper" | "sensevoice";
   },
 });
 async function chooseModel(kind: "whisper" | "sensevoice" | "translation") {
   if (kind === "sensevoice") {
     const dir = await openDialog({ multiple: false, directory: true });
-    if (typeof dir === "string") settings.sensevoiceModelPath = dir;
+    if (typeof dir === "string") {
+      settings.sensevoiceModelPath = dir;
+      settings.asrEngine = "sensevoice";
+    }
     return;
   }
   const path = await openDialog({ multiple: false, directory: false, filters: [{ name: kind === "whisper" ? "Whisper model" : "GGUF model", extensions: [kind === "whisper" ? "bin" : "gguf"] }] });
-  if (typeof path === "string") settings[kind === "whisper" ? "whisperModelPath" : "translationModelPath"] = path;
+  if (typeof path === "string") {
+    settings[kind === "whisper" ? "whisperModelPath" : "translationModelPath"] = path;
+    if (kind === "whisper") settings.asrEngine = "whisper";
+  }
 }
 // An explicit source list, not watchEffect: the call awaits before touching anything else,
 // so only what is read synchronously is tracked — and a field missing from that list makes
