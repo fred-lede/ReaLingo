@@ -47,11 +47,19 @@ impl LocalModelCache {
         if self.paths.as_ref() == Some(&paths) {
             return Ok(());
         }
-        let asr = match backend {
+        let mut asr = match backend {
             AsrBackend::Whisper => Box::new(WhisperEngine::load(asr_path)?) as Box<dyn AsrEngine>,
             AsrBackend::SenseVoice => Box::new(SenseVoiceEngine::load(asr_path)?) as Box<dyn AsrEngine>,
         };
-        let translator = translation_path.map(LocalTranslator::load).transpose()?;
+        let mut translator = translation_path.map(LocalTranslator::load).transpose()?;
+        // Both engines finish adapting to the hardware before the cache is
+        // considered ready, not while a sentence is in flight: the ASR probe
+        // picks Whisper's backend, the translator probe places its weights.
+        // The start button waits on the statuses that come out of this.
+        asr.ready()?;
+        if let Some(t) = translator.as_mut() {
+            t.ready()?;
+        }
         self.models = Some(LocalModels { asr, translator });
         self.paths = Some(paths);
         Ok(())

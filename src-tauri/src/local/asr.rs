@@ -36,6 +36,15 @@ pub trait AsrEngine: Send {
         offset_ms: i64,
         clip_after_ms: Option<i64>,
     ) -> Result<Vec<SubtitleSegment>, String>;
+
+    /// Run one minimal decode so the backend's status moves out of
+    /// "detecting". Whisper picks its GPU/CPU backend on its first state;
+    /// the engine calls this instead of waiting for the first live window.
+    /// The default is a no-op: engines whose backend is known the moment
+    /// the model loads (SenseVoice is CPU-onnx) have nothing to warm.
+    fn ready(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 struct TimedPiece {
@@ -89,21 +98,51 @@ impl WhisperEngine {
         let model_path = path.to_string_lossy();
         let mut gpu_params = WhisperContextParameters::default();
         gpu_params.use_gpu(true);
-        match WhisperContext::new_with_params(model_path.as_ref(), gpu_params) {
-            Ok(context) => Ok(Self { context, forced_cpu: false, backend: Mutex::new(BackendStatus::Detecting) }),
+        let (context, forced_cpu) = match WhisperContext::new_with_params(model_path.as_ref(), gpu_params) {
+            Ok(context) => (context, false),
             Err(gpu_error) => {
                 let mut cpu_params = WhisperContextParameters::default();
                 cpu_params.use_gpu(false);
-                WhisperContext::new_with_params(model_path.as_ref(), cpu_params)
-                    .map(|context| Self { context, forced_cpu: true, backend: Mutex::new(BackendStatus::Detecting) })
+                let context = WhisperContext::new_with_params(model_path.as_ref(), cpu_params)
                     .map_err(|cpu_error| {
                         format!(
                             "Could not load Whisper model {} (GPU: {gpu_error}; CPU: {cpu_error})",
                             path.display()
                         )
-                    })
+                    })?;
+                (context, true)
             }
-        }
+        };
+        let mut engine = Self { context, forced_cpu, backend: Mutex::new(BackendStatus::Detecting) };
+        engine.ready()?;
+        Ok(engine)
+    }
+
+    fn ready(&mut self) -> Result<(), String> {
+        // Whisper picks its backend on the first state. That call prints
+        // the lines `classify_whisper` reads, so the probe is the very
+        // operation that turns "detecting" into Metal/CUDA/CPU. A 3 s
+        // silence is enough: the first frame is a warm-up, the rest is
+        // the backend's own init.
+        let silence = vec![0f32; 16_000 * 3];
+        let params = self.probe_params();
+        let (result, evidence) = capture_whisper(|| self.context.create_state());
+        let mut state = result.map_err(|e| format!("Whisper probe state: {e}"))?;
+        let lines: Vec<_> = evidence.iter().map(String::as_str).collect();
+        *self.backend.lock().unwrap() = classify_whisper(&lines, self.forced_cpu);
+        state.full(params, &silence).map_err(|e| format!("Whisper warm-up failed: {e}"))?;
+        Ok(())
+    }
+
+    fn probe_params(&self) -> FullParams<'_, '_> {
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_n_threads(std::thread::available_parallelism().map_or(2, |n| n.get().min(8) as i32));
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_no_context(true);
+        params.set_token_timestamps(false);
+        params
     }
 
     pub fn transcribe_samples(
@@ -117,15 +156,8 @@ impl WhisperEngine {
         let mut state = state.map_err(|e| format!("Whisper state: {e}"))?;
         let lines: Vec<_> = evidence.iter().map(String::as_str).collect();
         *self.backend.lock().unwrap() = classify_whisper(&lines, self.forced_cpu);
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_n_threads(
-            std::thread::available_parallelism().map_or(2, |n| n.get().min(8) as i32),
-        );
+        let mut params = self.probe_params();
         params.set_language(language);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_no_context(true);
         params.set_token_timestamps(clip_after_ms.is_some());
         state
             .full(params, samples)

@@ -17,6 +17,7 @@ import { locale, setLocale, t } from "../core/i18n";
 import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
 import { check, checkUpdateAtStartup, openHome } from "../core/update";
 import type { BackendStatus } from "../core/local-diagnostics";
+import { localBackendsReady } from "../core/local-diagnostics";
 import { activeKey, settings, initSettings, resolvedTheme, SUB_SIZE, type SubAlign, type SubMode, type SubtitleStyle } from "../core/store";
 import { isInputTooQuiet } from "../core/input-level";
 import {
@@ -93,9 +94,15 @@ const fileName = computed(() => filePath.value.split(/[\\/]/).pop() ?? "");
 const deviceOptions = computed(() =>
   visibleDevices.value.map((d) => ({ value: d.id, label: d.name }))
 );
-const canStart = computed(() =>
-  sourceKind.value === "file" ? !!filePath.value : visibleDevices.value.some((device) => device.id === deviceId.value)
-);
+const canStart = computed(() => {
+  const sourceOk = sourceKind.value === "file" ? !!filePath.value : visibleDevices.value.some((device) => device.id === deviceId.value);
+  // Local mode: the start button also waits on the hardware probe, so a
+  // queued sentence does not sit behind a backend that is still settling.
+  if (settings.mode === "local") {
+    return sourceOk && localBackendsReady(localDiagnostics.value, transcribingOnly.value);
+  }
+  return sourceOk;
+});
 
 const statusKey = computed(() => {
   if (settings.mode === "remote" && !activeKey().trim()) return "statusNoKey" as const;

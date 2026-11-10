@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyLocalDiagnostics, updateLocalDiagnostics } from '../src/core/local-diagnostics.ts';
+import { emptyLocalDiagnostics, updateLocalDiagnostics, localBackendsReady } from '../src/core/local-diagnostics.ts';
 
 test('local diagnostics converts queued 100 ms chunks and retains the latest stage timings', () => {
   let stats = emptyLocalDiagnostics();
@@ -35,4 +35,18 @@ test('drop count follows cumulative capture total and unrelated events do not ch
   assert.equal(stats.droppedChunks, 6);
   assert.deepEqual(updateLocalDiagnostics(stats, { type: 'session.updated' }), stats);
   assert.deepEqual(updateLocalDiagnostics(stats, { type: 'local.asr', elapsedMs: -1, audioQueueChunks: 'bad' }), stats);
+});
+
+test('local start is gated on every backend leaving "detecting"', () => {
+  let stats = emptyLocalDiagnostics();
+  // Fresh: both still probing — the start button stays disabled.
+  assert.equal(localBackendsReady(stats, false), false);
+  stats = updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'asr', backend: 'metal' });
+  assert.equal(localBackendsReady(stats, false), false);
+  // Transcribe-only: the translator never runs, so only the ASR backend matters.
+  stats = updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'asr', backend: 'cpu' });
+  assert.equal(localBackendsReady(stats, true), true);
+  assert.equal(localBackendsReady(stats, false), false);
+  stats = updateLocalDiagnostics(stats, { type: 'local.backend', stage: 'translation', backend: 'metal' });
+  assert.equal(localBackendsReady(stats, false), true);
 });

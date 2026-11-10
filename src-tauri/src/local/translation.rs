@@ -84,6 +84,36 @@ pub struct LocalTranslator {
 }
 
 impl LocalTranslator {
+    /// One minimal generation so the backend's status is known before the
+    /// first real job: the offload count lands in the logs during the prompt
+    /// decode, and `backend_status` then stops being "detecting".
+    pub fn ready(&mut self) -> Result<(), String> {
+        let system = LlamaChatMessage::new("system".into(), "Reply with one word.".into()).map_err(|e| e.to_string())?;
+        let user = LlamaChatMessage::new("user".into(), "Ready?".into()).map_err(|e| e.to_string())?;
+        let prompt = self
+            .model
+            .apply_chat_template(&self.template, &[system, user], true)
+            .map_err(|e| e.to_string())?;
+        let vocab = self.model.vocab();
+        let tokens = vocab.tokenize(prompt.as_bytes(), true, true);
+        let ctx_size = std::num::NonZeroU32::new(512).expect("nonzero");
+        let ctx_params = LlamaContextParams::default().with_n_ctx(Some(ctx_size));
+        let mut ctx = self
+            .model
+            .new_context(self.backend, ctx_params)
+            .map_err(|e| format!("GGUF context: {e}"))?;
+        let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
+        batch.add_sequence(&tokens, 0, false).map_err(|e| e.to_string())?;
+        ctx.decode(&mut batch).map_err(|e| format!("GGUF prompt decode: {e}"))?;
+        let token = LlamaSampler::chain_simple([LlamaSampler::greedy()])
+            .sample(&ctx, batch.n_tokens() - 1);
+        // One token: enough to force the backend to place its weights. The
+        // offload count was already printed during the prompt decode above.
+        let _ = token;
+        self.backend_status = self.candidate_backend;
+        Ok(())
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         if !path.is_file() {
             return Err(format!(
@@ -112,14 +142,16 @@ impl LocalTranslator {
             .to_str()
             .map(|template| template.contains("enable_thinking"))
             .unwrap_or(false);
-        Ok(Self {
+        let mut translator = Self {
             model,
             template,
             qwen3,
             backend,
             candidate_backend,
             backend_status: BackendStatus::Detecting,
-        })
+        };
+        translator.ready()?;
+        Ok(translator)
     }
 
     pub fn backend_status(&self) -> BackendStatus {

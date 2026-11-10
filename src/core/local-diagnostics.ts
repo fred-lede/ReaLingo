@@ -22,6 +22,15 @@ export function emptyLocalDiagnostics(): LocalDiagnostics {
   };
 }
 
+/**
+ * Whether every local backend has finished its hardware probe. The probe runs
+ * when the models load, so "detecting" means the models have not finished
+ * loading yet — and starting would queue real audio behind it.
+ */
+export const localBackendsReady = (stats: LocalDiagnostics, transcribeOnly: boolean) =>
+  stats.asrBackend !== "detecting" &&
+  (transcribeOnly || stats.translationBackend !== "detecting");
+
 export function updateLocalDiagnostics(stats: LocalDiagnostics, payload: unknown): LocalDiagnostics {
   if (!payload || typeof payload !== "object") return stats;
   const event = payload as Record<string, unknown>;
