@@ -220,6 +220,50 @@ async fn probe_audio(state: State<'_, AppState>, id: String) -> Result<usize, St
     audio::probe(id).await.map_err(|e| e.to_string())
 }
 
+/// Load and probe the local models while the user is still in the settings
+/// sheet, so the backends report themselves before the start button can be
+/// pressed. The settings sheet watches its own fields and calls this; the
+/// result events land in the same diagnostics drawer that drives the
+/// button's enable/disable state.
+#[tauri::command]
+#[cfg(any(target_os = "macos", windows))]
+async fn load_local_models(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    return Err("Local inference is supported on Apple Silicon macOS and Windows only".into());
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+    if settings.mode == ExecutionMode::Local {
+        return Err("Local inference requires Apple Silicon on macOS".into());
+    }
+    let models = state.local_models.clone();
+    let backend = crate::local::AsrBackend::from_settings(&settings);
+    let asr_path = PathBuf::from(&settings.asr_model_path());
+    let translation_path = (!settings.transcribe_only).then(|| PathBuf::from(&settings.translation_model_path));
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = models.lock().unwrap();
+        let result = cache.load_for(backend, &asr_path, translation_path.as_deref());
+        if result.is_ok() {
+            let (asr, translation) = cache.backend_report();
+            for event in [
+                asr.map(|status| backend_report_event("asr", status)),
+                translation.map(|status| backend_report_event("translation", status)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let _ = app.emit(realtime::RAW_EVENT, event);
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn backend_report_event(stage: &str, status: crate::local::BackendStatus) -> serde_json::Value {
+    serde_json::json!({ "type": "local.backend", "stage": stage, "backend": status })
+}
+
 /// Shown read-only in Settings so it is obvious which host the app will dial.
 #[tauri::command]
 fn endpoint_url(settings: Settings) -> String {
@@ -255,6 +299,11 @@ async fn start_stream(
         let backend = crate::local::AsrBackend::from_settings(&settings);
         let asr_path = PathBuf::from(&settings.asr_model_path());
         let translation_path = (!settings.transcribe_only).then(|| PathBuf::from(&settings.translation_model_path));
+        // The settings sheet may already have loaded and probed these models;
+        // loading is a no-op then and the wait starts here only if the paths
+        // changed. Either way the backends are out of "detecting" by the time
+        // this returns, so the session's first window is not queued behind a
+        // backend that is still settling on the GPU.
         tauri::async_runtime::spawn_blocking(move || {
             models.lock().unwrap().load_for(backend, &asr_path, translation_path.as_deref())
         })
@@ -567,6 +616,8 @@ pub fn run() {
             open_recordings_dir,
             session_health,
             probe_audio,
+            #[cfg(any(target_os = "macos", windows))]
+            load_local_models,
             endpoint_url,
             start_stream,
             stop_stream,

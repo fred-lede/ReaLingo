@@ -10,6 +10,7 @@ mod sv_probe;
 mod translation;
 
 pub use asr::{AsrEngine, WhisperEngine};
+pub use backend_status::BackendStatus;
 pub use sensevoice::SenseVoiceEngine;
 pub use session::LocalSession;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,10 @@ pub struct LocalModelCache {
 }
 
 impl LocalModelCache {
+    /// Load and probe the models. The probe is what turns the backends out
+    /// of "detecting", so the caller is expected to surface the resulting
+    /// statuses (`backend_report`) in the UI while the user is choosing
+    /// settings — not while a sentence is in flight.
     pub fn load_for(
         &mut self,
         backend: AsrBackend,
@@ -52,10 +57,6 @@ impl LocalModelCache {
             AsrBackend::SenseVoice => Box::new(SenseVoiceEngine::load(asr_path)?) as Box<dyn AsrEngine>,
         };
         let mut translator = translation_path.map(LocalTranslator::load).transpose()?;
-        // Both engines finish adapting to the hardware before the cache is
-        // considered ready, not while a sentence is in flight: the ASR probe
-        // picks Whisper's backend, the translator probe places its weights.
-        // The start button waits on the statuses that come out of this.
         asr.ready()?;
         if let Some(t) = translator.as_mut() {
             t.ready()?;
@@ -63,6 +64,18 @@ impl LocalModelCache {
         self.models = Some(LocalModels { asr, translator });
         self.paths = Some(paths);
         Ok(())
+    }
+
+    /// The backends as the last load left them. `None` entries are the
+    /// stages that have no model (a transcription-only run has no
+    /// translator), which the UI reports as "not applicable" rather than
+    /// "detecting forever".
+    pub fn backend_report(&self) -> (Option<BackendStatus>, Option<BackendStatus>) {
+        let models = match self.models.as_ref() {
+            Some(models) => models,
+            None => return (None, None),
+        };
+        (Some(models.asr.backend_status()), models.translator.as_ref().map(|t| t.backend_status()))
     }
 
     pub fn models_mut(&mut self) -> &mut LocalModels {

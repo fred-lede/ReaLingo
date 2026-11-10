@@ -62,6 +62,37 @@ async function chooseModel(kind: "whisper" | "sensevoice" | "translation") {
     if (kind === "whisper") settings.asrEngine = "whisper";
   }
 }
+
+// Load + probe the local models while the settings sheet is open, so the
+// backends have reported themselves (Metal/CPU) by the time the user can
+// press start. Re-runs whenever the inputs to the load change; cheap when
+// the same models are already loaded, since `load_for` is a no-op.
+watch(
+  () => [
+    settings.mode,
+    settings.asrEngine,
+    settings.whisperModelPath,
+    settings.sensevoiceModelPath,
+    settings.translationModelPath,
+    settings.transcribeOnly,
+  ],
+  async () => {
+    if (settings.mode !== "local" || isRunning()) return;
+    const asrPath =
+      settings.asrEngine === "sensevoice" ? settings.sensevoiceModelPath : settings.whisperModelPath;
+    if (!asrPath) return;
+    if (!settings.transcribeOnly && !settings.translationModelPath) return;
+    try {
+      await invoke("load_local_models", {
+        settings: toRaw(settings),
+      });
+    } catch {
+      // A load failure stays the settings sheet's own error state; the start
+      // button simply keeps its "backends still detecting" disabled look.
+    }
+  },
+  { immediate: true }
+);
 // An explicit source list, not watchEffect: the call awaits before touching anything else,
 // so only what is read synchronously is tracked — and a field missing from that list makes
 // the preview silently lag one change behind.
