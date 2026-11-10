@@ -16,6 +16,15 @@ pub trait AsrEngine: Send {
     /// Which backend this engine reports in the diagnostics drawer.
     fn backend_status(&self) -> BackendStatus;
 
+    /// Whether the engine's window is stable the moment a segment comes
+    /// out: SenseVoice runs on a VAD window that only closes on a pause,
+    /// so its one segment is final — no 2 s stability margin is needed.
+    /// Whisper's sliding window can still correct its last segment, so
+    /// the margin stays.
+    fn is_stable_window_engine(&self) -> bool {
+        false
+    }
+
     /// Transcribe one VAD window. `language` is the forced language ("auto" is
     /// already filtered by the caller), `offset_ms` places the result on the
     /// input-audio clock, and `clip_after_ms` says how far of the window is

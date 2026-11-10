@@ -612,7 +612,13 @@ impl LocalSession {
             .sqrt();
         let tail_rms_dbfs = (20.0 * tail_rms.max(1e-6).log10()).round() as i32;
         let window_end_ms = window.offset_ms + (window.samples.len() * 1000 / RATE) as i64;
-        let stable_before_ms = if force {
+        // The 2 s margin keeps Whisper's sliding window honest: its last
+        // segment can still move between two decodes of the same tail.
+        // SenseVoice runs on a VAD window instead — the window only opens
+        // on speech and only closes on a pause, so once its one segment
+        // comes out there is nothing left to correct. Its timestamps are
+        // therefore final, and the margin applies to Whisper only.
+        let stable_before_ms = if force || asr.is_stable_window_engine() {
             i64::MAX
         } else {
             window_end_ms - 2_000

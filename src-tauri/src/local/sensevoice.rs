@@ -76,6 +76,10 @@ impl AsrEngine for SenseVoiceEngine {
         BackendStatus::Cpu
     }
 
+    fn is_stable_window_engine(&self) -> bool {
+        true
+    }
+
     fn transcribe_samples(
         &self,
         samples: &[f32],

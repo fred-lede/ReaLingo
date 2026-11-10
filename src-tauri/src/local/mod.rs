@@ -5,6 +5,8 @@ pub mod sensevoice;
 mod session;
 #[cfg(test)]
 mod sensevoice_smoke;
+#[cfg(test)]
+mod sv_probe;
 mod translation;
 
 pub use asr::{AsrEngine, WhisperEngine};
