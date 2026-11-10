@@ -1,8 +1,10 @@
 mod asr;
 mod backend_status;
 mod glossary;
-mod sensevoice;
+pub mod sensevoice;
 mod session;
+#[cfg(test)]
+mod sensevoice_smoke;
 mod translation;
 
 pub use asr::{AsrEngine, WhisperEngine};

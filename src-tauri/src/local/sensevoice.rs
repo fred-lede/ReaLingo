@@ -23,12 +23,17 @@ pub struct SenseVoiceEngine {
 
 impl SenseVoiceEngine {
     /// Load the SenseVoice ONNX model bundle from `dir`. The directory must
-    /// contain `model.onnx`, `tokens.txt` and `language_model.bin`.
+    /// contain `model.onnx` (or `model.int8.onnx`) and `tokens.txt`.
+    /// The int8 build is preferred when both are present: same ASR accuracy,
+    /// a quarter of the memory, and faster on CPU.
     pub fn load(dir: &Path) -> Result<Self, String> {
-        let model = dir.join("model.onnx");
+        let model = if dir.join("model.int8.onnx").is_file() {
+            dir.join("model.int8.onnx")
+        } else {
+            dir.join("model.onnx")
+        };
         let tokens = dir.join("tokens.txt");
-        let language = dir.join("language_model.bin");
-        for required in [model.as_path(), tokens.as_path(), language.as_path()] {
+        for required in [model.as_path(), tokens.as_path()] {
             if !required.is_file() {
                 return Err(format!(
                     "SenseVoice model file not found: {}",
@@ -40,7 +45,7 @@ impl SenseVoiceEngine {
         let mut config = OfflineRecognizerConfig::default();
         config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
             model: Some(model.to_string_lossy().into_owned()),
-            language: Some(language.to_string_lossy().into_owned()),
+            language: None, // picked per call via the stream option; None = auto
             use_itn: true,
         };
         config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
