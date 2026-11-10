@@ -305,12 +305,11 @@ const eventsReady = listen<RtEvent>("rt://event", ({ payload: e }) => {
       if (e.lang) detectedLang.value = e.lang;
       speaking.value = !e.done;
       if (e.done) t.sourceDone = true;
-      // Transcription-only turns have no target event, so publish and settle on source.
-      // Translation turns still wait for their target before adding a stream row.
-      if (settings.mode === "local" && settings.transcribeOnly) {
-        publish(t);
-        if (e.done) t.targetDone = true;
-      } else if (t.lineId !== undefined) publish(t);
+      // Live row from the moment the transcript has text, whatever the mode:
+      // the user is hearing what is being said now, and the translation
+      // fills the row in when it arrives.
+      publish(t);
+      if (settings.mode === "local" && settings.transcribeOnly && e.done) t.targetDone = true;
       syncCurrent();
       settle(t);
       break;
@@ -321,12 +320,11 @@ const eventsReady = listen<RtEvent>("rt://event", ({ payload: e }) => {
       t.target = e.text;
       t.targetStash = e.done ? "" : e.stash;
       speaking.value = !e.done;
-      if (e.done) {
-        t.targetDone = true;
-        // Into the stream now, even though the transcript may still be seconds away —
-        // waiting would leave the row blank while the model has already answered.
-        publish(t);
-      }
+      if (e.done) t.targetDone = true;
+      // The row already exists from the transcript (or now, when the answer
+      // beats it — the row is blank but the model has already answered): keep
+      // it current either way, no need to wait for the final flag to show it.
+      publish(t);
       syncCurrent();
       settle(t);
       break;
