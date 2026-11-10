@@ -731,16 +731,18 @@ watch([lines, current], async () => {
         <footer class="dock">
           <p v-if="errorMsg" class="err">{{ errorMsg }}</p>
           <p v-else-if="warnMsg" class="warn">{{ warnMsg }}</p>
-          <div v-if="settings.mode === 'local' && isRunning()" class="local-perf" :title="t('diagHint')">
+          <div v-if="settings.mode === 'local'" class="local-perf" :title="t('diagHint')">
             <span class="local-perf-title">{{ t("diagTitle") }}</span>
             <div class="local-perf-grid">
               <span>{{ t("diagAsrBackend") }} <b>{{ t(backendLabel(localDiagnostics.asrBackend)) }}</b></span>
               <span v-if="!transcribingOnly">{{ t("diagTranslationBackend") }} <b>{{ t(backendLabel(localDiagnostics.translationBackend)) }}</b></span>
-              <span>{{ t("diagAudioQueue") }} <b>{{ localDiagnostics.audioQueueMs === null ? "—" : `${(localDiagnostics.audioQueueMs / 1000).toFixed(1)}s` }}</b></span>
-              <span>{{ t("diagAsr") }} <b>{{ localDiagnostics.asrElapsedMs === null ? "—" : `${(localDiagnostics.asrElapsedMs / 1000).toFixed(1)}s` }}</b></span>
-              <span v-if="!transcribingOnly">{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>
-              <span v-if="!transcribingOnly">{{ t("diagTranslation") }} <b>{{ localDiagnostics.translationElapsedMs === null ? "—" : `${(localDiagnostics.translationElapsedMs / 1000).toFixed(1)}s` }}</b></span>
-              <span>{{ t("diagDropped") }} <b>{{ localDiagnostics.droppedChunks }}</b></span>
+              <template v-if="isRunning()">
+                <span>{{ t("diagAudioQueue") }} <b>{{ localDiagnostics.audioQueueMs === null ? "—" : `${(localDiagnostics.audioQueueMs / 1000).toFixed(1)}s` }}</b></span>
+                <span>{{ t("diagAsr") }} <b>{{ localDiagnostics.asrElapsedMs === null ? "—" : `${(localDiagnostics.asrElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+                <span v-if="!transcribingOnly">{{ t("diagTranslationWait") }} <b>{{ localDiagnostics.translationQueueMs === null ? "—" : `${(localDiagnostics.translationQueueMs / 1000).toFixed(1)}s` }}</b></span>
+                <span v-if="!transcribingOnly">{{ t("diagTranslation") }} <b>{{ localDiagnostics.translationElapsedMs === null ? "—" : `${(localDiagnostics.translationElapsedMs / 1000).toFixed(1)}s` }}</b></span>
+                <span>{{ t("diagDropped") }} <b>{{ localDiagnostics.droppedChunks }}</b></span>
+              </template>
             </div>
           </div>
           <button

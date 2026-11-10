@@ -378,7 +378,13 @@ export async function start(source: Source, speak: boolean) {
   detectedLang.value = "";
   resetTurns();
   rawLog.value = [];
-  localDiagnostics.value = emptyLocalDiagnostics();
+  // Per-session counters reset; the backend answers carry over — the models
+  // did not change under us, so "detecting" would be a lie.
+  localDiagnostics.value = {
+    ...emptyLocalDiagnostics(),
+    asrBackend: localDiagnostics.value.asrBackend,
+    translationBackend: localDiagnostics.value.translationBackend,
+  };
   audioMs.value = 0;
   lastServerEvent.value = "";
   lastServerError.value = "";
