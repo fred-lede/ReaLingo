@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, nextTick, toRaw } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -124,6 +124,23 @@ async function refreshDevices() {
   await pickDefaultDevice();
 }
 
+/** Load + probe the local models when the current settings can run them. */
+async function preloadLocalModels() {
+  if (settings.mode !== "local" || isRunning()) return;
+  const asrPath =
+    settings.asrEngine === "sensevoice" ? settings.sensevoiceModelPath : settings.whisperModelPath;
+  if (!asrPath) return;
+  if (!settings.transcribeOnly && !settings.translationModelPath) return;
+  try {
+    await invoke("load_local_models", {
+      settings: toRaw(settings),
+    });
+  } catch {
+    // A load failure stays the settings sheet's own error state; the start
+    // button keeps its "backends still detecting" disabled look.
+  }
+}
+
 async function pickDefaultDevice() {
   if (sourceKind.value === "file") return;
   if (visibleDevices.value.some((d) => d.id === deviceId.value)) return;
@@ -134,6 +151,19 @@ async function pickDefaultDevice() {
 }
 
 watch(sourceKind, pickDefaultDevice);
+watch(
+  () => [
+    settings.mode,
+    settings.asrEngine,
+    settings.whisperModelPath,
+    settings.sensevoiceModelPath,
+    settings.translationModelPath,
+    settings.transcribeOnly,
+  ],
+  () => {
+    void preloadLocalModels();
+  }
+);
 
 async function chooseFile() {
   const picked = await openDialog({
@@ -378,6 +408,10 @@ onMounted(async () => {
   void checkUpdateAtStartup();
   await initSettings();
   await refreshDevices();
+  // Probe the local models as soon as settings are read, so the backends
+  // report themselves (and the start button can unlock) without the user
+  // having to open the settings sheet first.
+  void preloadLocalModels();
   await showOverlay(settings.sub.show);
   await syncTray();
   levelTimer = window.setInterval(async () => {
