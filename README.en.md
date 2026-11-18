@@ -87,7 +87,7 @@ reopen the app and grant it again — the ad-hoc signature differs per version, 
 2. Select languages and an audio source: microphone, system audio, or audio file. Press Start.
 3. Grant microphone permission when asked. System audio needs Android 10+ and fresh system consent for each session; protected media, calls, or apps that block capture may be silent.
 4. Allow “Display over other apps” for floating subtitles. Drag or resize the overlay; locking lets touches pass through. Fullscreen subtitles stay inside the app.
-5. Route speech to the speaker, earpiece, or headphones; search the voice list. History and TXT/SRT exports use the system document picker.
+5. Speech follows the system output by default. The compact output picker lists the speaker, earpiece and detected Bluetooth, wired, USB or other devices; changes apply to the next session. The speech switch and searchable voices stay in one sheet. History and TXT/SRT exports use the system document picker.
 
 Permission center and Session diagnostics show authorization and actual audio-upload status. Vendor-specific background restrictions still need device testing.
 The `.debug` test package and official package are separate apps; settings/history do not migrate automatically.
@@ -269,14 +269,17 @@ macOS and Linux bundles cannot be cross-compiled from Windows, so
 | Pushing a `v*` tag | The same, plus a GitHub release with the installers attached |
 
 Releasing goes draft → each of the four platforms uploads → **publish only after all builds, main CI, and Android 15/16 emulator tests pass for that commit**. A failure leaves the release as a draft. Tags must match `[package] version` in `src-tauri/Cargo.toml`.
+Android CI builds ARM64 and x86_64 APKs, using one emulator for PRs and both page sizes on main; Markdown-only changes skip heavy jobs.
+Releases still require real successful smoke jobs for both page sizes on the exact commit, with a full manual run when needed; see [Android testing](development/android-testing.md).
 
 The version lives in exactly one place: `[package] version` in `src-tauri/Cargo.toml`.
 `tauri.conf.json` omits the `version` field so Tauri falls back to Cargo.toml, and
 `package.json` is `private` and carries none. CI checks the tag against that one place. Prerelease tags are marked Pre-release and do not replace stable Latest. Windows MSI rejects textual prerelease suffixes; configure a separate numeric MSI version before shipping a Beta or similar version.
 
-Release notes go in `.github/release-notes/v<version>.md`, committed before the tag; CI puts them at the
-top of the release, followed by GitHub's generated list of changes. Without that file only the generated
-part appears.
+Release notes must be committed to `.github/release-notes/v<version>.md` before tagging; CI puts them at
+the top of the release, followed by GitHub's generated list of changes. Use Keep a Changelog categories
+with matching Chinese and English content. See the [version and release standards](CODING_STANDARDS.md#版本与发布)
+for versioning, formatting, and pre-release checks.
 
 ```bash
 # Replace X.Y.Z with the intended version; update Cargo.toml / Cargo.lock and release notes, then commit.

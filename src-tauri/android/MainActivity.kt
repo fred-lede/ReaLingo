@@ -14,11 +14,18 @@ package com.nosugark.realingo
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.WindowManager
 import android.view.ViewGroup
@@ -27,6 +34,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 import androidx.annotation.Keep
+import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -35,6 +43,44 @@ class MainActivity : TauriActivity() {
     @Volatile private var keepFlag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
     @Volatile private var micRequesting = false
     private var systemRequestPending = false
+    private val notificationCommand = AtomicReference("")
+    private var outputDevicesCallback: AudioDeviceCallback? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        acceptNotificationCommand(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptNotificationCommand(intent)
+    }
+
+    override fun onDestroy() {
+        outputDevicesCallback?.let { (getSystemService(AUDIO_SERVICE) as AudioManager).unregisterAudioDeviceCallback(it) }
+        outputDevicesCallback = null
+        super.onDestroy()
+    }
+
+    private fun acceptNotificationCommand(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_NOTIFICATION_COMMAND)?.let { notificationCommand.set(it) }
+    }
+
+    private fun applySystemBars(dark: Boolean) {
+        val background = Color.parseColor(if (dark) "#0b0d13" else "#eef1f7")
+        window.setBackgroundDrawable(ColorDrawable(background))
+        window.statusBarColor = background
+        window.navigationBarColor = background
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+        }
+    }
 
     // One-slot result for the file picker: busy while the dialog/copy lives, then a
     // terminal JSON the frontend reads and resets. "picked" carries a real path the
@@ -47,6 +93,13 @@ class MainActivity : TauriActivity() {
     // WebView resolves these names through reflection, outside R8's call graph.
     @Keep
     inner class Bridge {
+        @JavascriptInterface
+        fun setSystemBars(theme: String) {
+            runOnUiThread { applySystemBars(theme == "dark") }
+        }
+
+        @JavascriptInterface
+        fun takeNotificationCommand(): String = notificationCommand.getAndSet("")
         /// {"granted":bool,"rationale":bool} — the same shape the Rust command answered,
         /// so the state machine in src/mobile/perms.ts did not change: rationale is the
         /// line between "denied once" and "never ask again".
@@ -96,6 +149,22 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
+        fun openNotificationSettings() {
+            runOnUiThread {
+                val appSettings = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    val notifications = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(notifications)
+                } catch (_: ActivityNotFoundException) {
+                    runCatching { startActivity(appSettings) }
+                }
+            }
+        }
+
+        @JavascriptInterface
         fun openBatterySettings() {
             runOnUiThread {
                 try {
@@ -128,6 +197,7 @@ class MainActivity : TauriActivity() {
             }
         }
         @JavascriptInterface fun updateOverlay(json: String) { runOnUiThread { SubtitleService.update(json) } }
+        @JavascriptInterface fun setOverlayLocked(locked: Boolean) { runOnUiThread { SubtitleService.setLocked(locked) } }
         @JavascriptInterface fun resetOverlayPosition() { runOnUiThread { SubtitleService.resetPosition(this@MainActivity) } }
         @JavascriptInterface fun startCapture(kind: String) {
             if (kind != "mic" && kind != "file") return
@@ -280,6 +350,46 @@ class MainActivity : TauriActivity() {
     // LittleLobby registers its bridge in.
     override fun onWebViewCreate(webView: android.webkit.WebView) {
         super.onWebViewCreate(webView)
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        outputDevicesCallback?.let { audioManager.unregisterAudioDeviceCallback(it) }
+        val callback = object : AudioDeviceCallback() {
+            private fun changed(devices: Array<out AudioDeviceInfo>) {
+                if (devices.any { it.isSink }) webView.evaluateJavascript(
+                    "window.dispatchEvent(new Event('realingo:outputs'))", null
+                )
+            }
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) { changed(addedDevices) }
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) { changed(removedDevices) }
+        }
+        outputDevicesCallback = callback
+        audioManager.registerAudioDeviceCallback(callback, Handler(Looper.getMainLooper()))
+        // Vue owns the local pages/sheets. Only an unhandled back reaches Android.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            private var pending = false
+
+            override fun handleOnBackPressed() {
+                if (pending) return
+                pending = true
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new Event('realingo:back', { cancelable: true }))"
+                ) { result ->
+                    pending = false
+                    if (result != "false") {
+                        if (isTaskRoot) {
+                            // Match launcher-root Back behavior and retain Tauri's native runtime.
+                            moveTaskToBack(true)
+                        } else {
+                            isEnabled = false
+                            try {
+                                onBackPressedDispatcher.onBackPressed()
+                            } finally {
+                                isEnabled = true
+                            }
+                        }
+                    }
+                }
+            }
+        })
         // Android 15+ enforces edge-to-edge, but WebView's CSS safe-area env values
         // can stay zero. Resize the actual viewport around system bars/cutouts/IME.
         ViewCompat.setOnApplyWindowInsetsListener(webView) { view, insets ->
@@ -294,16 +404,13 @@ class MainActivity : TauriActivity() {
             WindowInsetsCompat.CONSUMED
         }
         webView.post { ViewCompat.requestApplyInsets(webView) }
-        val lightBars = resources.configuration.uiMode and
-            android.content.res.Configuration.UI_MODE_NIGHT_MASK != android.content.res.Configuration.UI_MODE_NIGHT_YES
-        WindowCompat.getInsetsController(window, webView).apply {
-            isAppearanceLightStatusBars = lightBars
-            isAppearanceLightNavigationBars = lightBars
-        }
+        applySystemBars(resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES)
         webView.addJavascriptInterface(Bridge(), "ReaLingoAndroid")
     }
 
     companion object {
+        const val EXTRA_NOTIFICATION_COMMAND = "notificationCommand"
         private const val PICK_AUDIO = 42
         private const val REQUEST_MIC = 43
         private const val REQUEST_SYSTEM_AUDIO = 44

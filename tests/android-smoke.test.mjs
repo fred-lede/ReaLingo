@@ -1,7 +1,42 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { targetBounds, appCrashLines, overlayFrame, keyboardVisible, editorFocused, scrollDirection, launcherAnrClose } from '../scripts/smoke-android.mjs';
+import { targetBounds, appCrashLines, overlayFrame, overlayLocked, liveNotification, keyboardVisible, dismissKeyboard, editorFocused, scrollDirection, launcherAnrClose } from '../scripts/smoke-android.mjs';
 import { decode } from '../scripts/png.mjs';
+
+test('output picker taps the clickable accessible label even when the selected value is absent', () => {
+  // API 35 WebView exposes the aria-label, not the selected option, in UIAutomator.
+  const xml = '<node text="Play through" class="android.widget.TextView" clickable="false" bounds="[91,900][456,950]" />' +
+    '<node text="Play through" class="android.view.View" clickable="true" bounds="[485,879][968,971]" />';
+  assert.equal(targetBounds(xml, ['Follow system']), null);
+  assert.deepEqual(targetBounds(xml, ['Play through', '播放到']), [727, 925]);
+});
+
+test('output picker finds the actual view when WebView exposes its value instead of its label', () => {
+  const xml = '<node text="Play through" class="android.widget.TextView" clickable="false" bounds="[91,900][456,950]" />' +
+    '<node text="Follow system" class="android.view.View" clickable="true" bounds="[485,879][968,971]" />';
+  assert.deepEqual(targetBounds(xml, ['Play through', '播放到'], 'android.view.View'), [727, 925]);
+  assert.deepEqual(targetBounds(xml.replace('text="Follow system"', 'text="Play through"'), ['Play through', '播放到'], 'android.view.View'), [727, 925]);
+});
+
+test('an explicitly unnamed editor selector requires exactly one visible field', () => {
+  // API 35 omits the history search aria-label and placeholder from its XML.
+  const field = '<node NAF="true" text="" class="android.widget.EditText" focused="true" bounds="[147,391][1008,488]" />';
+  assert.deepEqual(targetBounds(field, [], 'android.widget.EditText'), [578, 440]);
+  assert.equal(editorFocused(field, []), true);
+  assert.equal(targetBounds(field + field, [], 'android.widget.EditText'), null);
+  assert.equal(targetBounds(field.replace('[147,391][1008,488]', '[0,0][0,0]'), [], 'android.widget.EditText'), null);
+  assert.equal(targetBounds(field, ['Search this session…'], 'android.widget.EditText'), null);
+});
+
+test('keyboard dismissal waits through delayed opening and closing before scrolling', async () => {
+  const visible = 'Window #7 Window{e9d9f26 u0 InputMethod}:\n mViewVisibility=0x0 mHasSurface=true isOnScreen=true\n';
+  const states = ['', '', visible, visible, '', '', ''];
+  let reads = 0, backs = 0;
+  await dismissKeyboard(() => states[reads++] ?? '', () => { backs++; }, async () => {});
+  assert.equal(backs, 1, 'Back is sent once; a closing keyboard must not navigate the page');
+  assert.equal(reads, states.length, 'wait for stable hidden snapshots');
+  await assert.rejects(dismissKeyboard(() => visible, () => {}, async () => {}), /keyboard did not close/);
+});
 
 test('only the emulator launcher ANR can be dismissed; app ANRs remain failures', () => {
   const xml = '<node text="Pixel Launcher isn\'t responding" />' +
@@ -19,6 +54,22 @@ test('native overlay checks select its own surfaced window and support Android f
   assert.deepEqual(overlayFrame(dump.replace('frame=[64', 'mFrame=[64')), [64, 1200, 1016, 1600]);
   assert.equal(overlayFrame(dump.replaceAll('mHasSurface=true', 'mHasSurface=false')), null);
   assert.equal(overlayFrame('Window #0 Window{a u0 Other}: mHasSurface=true mFrame=[0,0][1080,1920]'), null);
+});
+
+test('lock assertions inspect the surfaced overlay flags rather than another window', () => {
+  const dump = 'Window #0 Window{a u0 Other}:\n mHasSurface=true NOT_TOUCHABLE\n' +
+    'Window #1 Window{b u0 ReaLingo subtitles}:\n mHasSurface=true\n fl=NOT_FOCUSABLE NOT_TOUCHABLE\n';
+  assert.equal(overlayLocked(dump), true);
+  assert.equal(overlayLocked(dump.replace('fl=NOT_FOCUSABLE NOT_TOUCHABLE', 'fl=NOT_FOCUSABLE')), false);
+  assert.equal(overlayLocked(dump.replaceAll('mHasSurface=true', 'mHasSurface=false')), false);
+});
+
+test('notification assertions select this app live service notification', () => {
+  const other = 'NotificationRecord(a: pkg=com.other user=UserHandle{0} id=73)\n actions={ "Sub off" }\n';
+  const own = 'NotificationRecord(b: pkg=com.nosugark.realingo user=UserHandle{0} id=73)\n actions={ "Sub on" }\n';
+  const extra = 'NotificationRecord(c: pkg=com.nosugark.realingo user=UserHandle{0} id=74)\n';
+  assert.equal(liveNotification(other + own + extra, 'com.nosugark.realingo'), own);
+  assert.equal(liveNotification(other, 'com.nosugark.realingo'), '');
 });
 
 test('keyboard dismissal requires the current visible IME window, not stale input-method history', () => {

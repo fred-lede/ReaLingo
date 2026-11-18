@@ -25,16 +25,20 @@ interface Droid {
   notifEnabled(): boolean;
   batteryIgnored(): boolean;
   openAppSettings(): void;
+  openNotificationSettings(): void;
   openBatterySettings(): void;
   setKeepScreenOn(on: boolean): void;
   deviceName(): string;
   pickAudioFile(): void;
   pickResult(): string;
   overlayStatus(): string;
+  setSystemBars(theme: string): void;
+  takeNotificationCommand(): string;
   systemAudioSupported(): boolean;
   requestOverlay(): void;
   showOverlay(show: boolean): void;
   updateOverlay(json: string): void;
+  setOverlayLocked(locked: boolean): void;
   resetOverlayPosition(): void;
   startCapture(kind: string): void;
   stopCapture(): void;
@@ -119,6 +123,11 @@ export async function askMic(autoStart = false): Promise<MicState> {
 export function openAppSettings(autoStart: boolean) {
   perms.pendingStart = autoStart;
   if (droid) droid.openAppSettings();
+  else void invoke("open_app_settings").catch(() => {});
+}
+
+export function openNotificationSettings() {
+  if (droid) droid.openNotificationSettings();
   else void invoke("open_app_settings").catch(() => {});
 }
 

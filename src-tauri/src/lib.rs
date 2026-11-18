@@ -631,7 +631,7 @@ pub fn run() {
             history::history_open_dir,
             history::history_dir,
             tray::sync_tray,
-            player::output_kinds
+            player::output_devices
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -54,7 +54,51 @@ and actual AudioPlaybackCapture frames. It saves screenshots, UI XML and logcat 
 `android-smoke/` (override with `ANDROID_SMOKE_OUTPUT`). Never use the smoke runner
 against an installation containing settings/history you want to keep.
 
-`.github/workflows/android-test.yml` runs on main pushes, PRs, and manual dispatch. It builds release ARM64 and x86_64 APKs, then runs the latter on API 35 with 4 KB pages and API 36 (`google_apis_ps16k`) with 16 KB pages. The API 35 16 KB preview's older WebView is not used. The page size is asserted on the emulator. The API 26
+It also presses the Android Back key through sheets, Permissions, History, Settings and
+Home; records/searches history; streams long subtitles while locking the native overlay;
+and uses notification actions to unlock, hide/show subtitles, stop and restart capture.
+The lock test requires touch-through to remain enabled while new translations arrive.
+The speech check opens the compact native output picker, requires an enumerated speaker,
+and searches voices without leaving the speech sheet. It locates the picker by its
+label (Play through) and actual view class: WebViews may expose either the label or
+the selected value on the view. History search explicitly selects its sole visible
+editor when older WebViews omit the accessible name; multiple editors remain an error.
+Form input waits for the soft keyboard to remain hidden before navigation; scrolling
+also checks for a visible keyboard so swipes cannot silently edit the focused URL.
+Bluetooth/USB device enumeration,
+disconnect refresh and legacy preferences have host tests; actual Bluetooth routing and
+connection changes during playback still require physical hardware verification.
+
+After changing system-bar styling, manually cold-launch with the OS in light and dark
+mode, then select Light, Dark and System in app settings. Check that status/navigation
+bar backgrounds match the app and their icons stay readable, including after returning
+from the background. Browser previews cannot verify these native bars.
+
+`.github/workflows/android-test.yml` runs on main pushes, PRs, and manual dispatch:
+
+| Change / trigger | APK builds | Emulator coverage |
+| --- | --- | --- |
+| Markdown-only push or PR | Skipped | Skipped; the workflow still resolves |
+| Other PR changes | x86_64 and ARM64 | API 35 / 4 KB |
+| Other main pushes | x86_64 and ARM64 | API 35 / 4 KB and API 36 / 16 KB |
+| Manual run, `full=true` (default) | x86_64 and ARM64 | Both page sizes |
+
+Every app/test run builds and verifies both architectures; emulators execute x86_64.
+The release workflow also builds ARM64. APK-only reuse requires both artifacts and remains
+available when test-harness changes leave all app/build inputs unchanged; full manual
+runs always rebuild. Gradle/Kotlin dependency caches reduce repeated setup work.
+Fast Node, Python and Rust checks remain in `ci.yml`. Screenshots are diagnostic
+artifacts, not automated proof of colors or other visual details.
+
+Before releasing, require successful smoke jobs for **both page sizes on the exact
+release commit**. A skipped documentation run cannot satisfy this gate. If that commit
+only changes notes/version documentation, dispatch Android tests on it before tagging:
+
+```bash
+gh workflow run android-test.yml --ref main -f full=true
+```
+
+The API 35 16 KB preview's older WebView is not used. The page size is asserted on the emulator. The API 26
 default emulator image has no WebView provider; testing older supported devices requires
 an installed, current WebView and remains a separate device check. Both this
 workflow and the ARM64 release workflow check APK ZIP alignment and every native

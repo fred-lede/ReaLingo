@@ -9,3 +9,4 @@ models/
 graphify-out/
 .claude/
 .scratch/
+__pycache__/

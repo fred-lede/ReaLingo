@@ -16,24 +16,26 @@ import ModelSheet from "./ModelSheet.vue";
 import AboutSheet from "./AboutSheet.vue";
 import UiLangSheet from "./UiLangSheet.vue";
 import StreamList from "./StreamList.vue";
+import LiveCard from "./LiveCard.vue";
 import Toaster from "./Toaster.vue";
 import Icon from "./Icon.vue";
 import mark from "../assets/mark.png";
-import { session } from "../core/session";
+import { AUDIO_EXT, session } from "../core/session";
 import { loadCaps } from "../core/platform";
-import { settings, STREAM_SIZE, activeKey, setActiveKey, keyringOk, initSettings } from "../core/store";
+import { settings, STREAM_SIZE, activeKey, setActiveKey, keyringOk, initSettings, resolvedTheme } from "../core/store";
 import { PRESETS, PROTOCOLS, langName, modelName } from "../core/languages";
 import { locale, t, tf } from "../core/i18n";
 import { checkUpdateAtStartup } from "../core/update";
-import { isRunning, lines, current, status, errorMsg, warnMsg, fileProgress, saveAs, pollHealth } from "../core/stream";
-import { perms, droid, refreshPerms, askMic, openAppSettings, openBatterySettings, pendingList, setKeepScreenOn, pickAudio } from "./perms";
+import { isRunning, lines, current, status, errorMsg, warnMsg, fileProgress, saveAs, pollHealth, detectedLang } from "../core/stream";
+import { perms, droid, refreshPerms, askMic, openAppSettings, openNotificationSettings, openBatterySettings, pendingList, setKeepScreenOn, pickAudio } from "./perms";
 import { toast } from "./toasts";
 import { VENDOR_LOGO } from "../shared/vendorLogos";
 
-type Page = "home" | "settings" | "perms";
+type Page = "home" | "settings" | "perms" | "history";
 const page = ref<Page>("home");
-type Drawer = null | "src" | "lang" | "speak" | "model" | "about" | "uilang" | "overlay" | "history" | "diagnostics";
+type Drawer = null | "src" | "lang" | "speak" | "model" | "about" | "uilang" | "overlay" | "diagnostics";
 const drawer = ref<Drawer>(null);
+const THEME_OPTIONS = [["system", "themeSystem"], ["light", "themeLight"], ["dark", "themeDark"]] as const;
 const langSide = ref<"source" | "target">("target");
 function openLang(side: "source" | "target") {
   langSide.value = side;
@@ -41,7 +43,7 @@ function openLang(side: "source" | "target") {
 }
 
 /** Modes layered over the home layout: the room reads these, the hand does not. */
-const mode = ref<"normal" | "face" | "big">("normal");
+const mode = ref<"normal" | "big">("normal");
 
 /* ---------- boot ---------- */
 let nativeTimer: number | undefined;
@@ -52,6 +54,8 @@ let levelTimer: number | undefined;
 let unlistenResume: (() => void) | undefined;
 const bootError = ref("");
 const reload = () => window.location.reload();
+watch(resolvedTheme, (theme) => droid?.setSystemBars(theme), { immediate: true });
+watch(() => settings.sub.locked, (locked) => droid?.setOverlayLocked(locked), { immediate: true, flush: "sync" });
 
 /** Coming back to the app re-checks permissions (the design's "改完不用重启") and fires a
  *  start the guide dialog promised. `tauri://resume` is mobile's lifecycle event;
@@ -60,6 +64,7 @@ const reload = () => window.location.reload();
 async function onResume() {
   await refreshPerms();
   refreshNative();
+  await handleNotificationCommand();
   if (pendingOverlay && native.granted) { pendingOverlay = false; await toggleOverlay(); }
   if (perms.pendingStart && perms.mic === "granted") {
     perms.pendingStart = false;
@@ -68,6 +73,7 @@ async function onResume() {
 }
 
 onMounted(async () => {
+  window.addEventListener("realingo:back", onAndroidBack);
   try {
     await initSettings();
     await loadCaps();
@@ -76,6 +82,7 @@ onMounted(async () => {
     syncOverlay();
     nativeTimer = window.setInterval(() => {
       void pollHealth().catch((e) => { errorMsg.value = String(e); });
+      void handleNotificationCommand();
       refreshNative();
       settings.sub.show = native.visible;
       if (native.visible && native.width >= 40 && native.width <= 100) settings.sub.mobileWidth = native.width;
@@ -98,6 +105,7 @@ function onVisible() {
   if (!document.hidden) void onResume();
 }
 onUnmounted(() => {
+  window.removeEventListener("realingo:back", onAndroidBack);
   window.clearInterval(levelTimer);
   window.clearInterval(nativeTimer);
   unlistenResume?.();
@@ -164,6 +172,15 @@ async function stop() {
   catch (e) { errorMsg.value = String(e); status.value = "error"; }
 }
 
+async function handleNotificationCommand() {
+  if (!droid) return;
+  const command = droid.takeNotificationCommand();
+  if (command === "start") await start();
+  else if (command === "stop" && isRunning()) await stop();
+  else if (command === "subtitles") await toggleOverlay();
+  else if (command === "unlock") settings.sub.locked = false;
+}
+
 /** The toast's "重新开始": stop, then start again with the new wire format. Stopping is
  *  asynchronous on the server's tail, so the restart waits for the status to settle. */
 async function restartNow() {
@@ -174,6 +191,16 @@ async function restartNow() {
 }
 
 const guideOpen = ref(false);
+function onAndroidBack(event: Event) {
+  if (guideOpen.value) guideOpen.value = false;
+  else if (drawer.value) drawer.value = null;
+  else if (page.value === "history" || page.value === "perms") page.value = "settings";
+  else if (page.value === "settings") page.value = "home";
+  else if (mode.value === "big") mode.value = "normal";
+  else return; // Home: let Android apply its default back behavior.
+  event.preventDefault();
+}
+
 function guideToSettings() {
   guideOpen.value = false;
   openAppSettings(true);
@@ -186,7 +213,6 @@ function guideUseFile() {
 }
 
 /* ---------- file source ---------- */
-const AUDIO_EXT = ["mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "oga"];
 async function chooseFile() {
   // Android: the Kotlin bridge owns the picker (ACTION_OPEN_DOCUMENT plus a cache copy —
   // Tauri's dialog plugin has no mobile file dialog, and content:// paths would not open
@@ -240,16 +266,12 @@ function syncOverlay() {
   const pair = active ? { source: current.source + current.sourceStash, target: current.target + current.targetStash } : lines.value[lines.value.length - 1];
   updateOverlay({ ...settings.sub, source: pair?.source ?? "", target: pair?.target ?? "",
     empty: emptyText.value, close: t("subHide"), resize: t("overlayWidth"),
-    notification: t("captureNotification"), captureEnded: t("captureEnded") });
+    overlayLock: t("overlayLock"),
+    notification: t("captureNotification"), captureEnded: t("captureEnded"),
+    notifStart: t("notifStart"), notifStop: t("notifStop"), notifSubOn: t("notifSubOn"), notifSubOff: t("notifSubOff"),
+    notifUnlock: t("notifUnlock") });
 }
 watch([() => settings.sub, current, lines, locale], syncOverlay, { deep: true });
-function toggleFace() {
-  mode.value = mode.value === "face" ? "normal" : "face";
-  // Face-to-face only makes sense where the protocol speaks both ways; entering it turns
-  // two-way on if the API can (the picker rule keeps zh/en as the pair).
-  if (mode.value === "face" && PROTOCOLS[settings.protocol].twoWay) settings.twoWay = true;
-}
-
 /** Ask from the permission centre: on a permanent denial the same guide the start button
  *  uses, otherwise just the system dialog. */
 async function askFromCenter() {
@@ -298,6 +320,7 @@ async function askFromCenter() {
         <button class="side" @click="openLang('source')">
           <span class="cap">{{ t("from") }}</span>
           <span class="val dim">{{ settings.sourceLang === "auto" || session.sourceMode.value === "detected" ? langName("auto", locale) : langName(settings.sourceLang, locale) }}</span>
+          <span v-if="settings.sourceLang === 'auto' && detectedLang" class="det">{{ tf("detectedPrefix", { lang: langName(detectedLang, locale) }) }}</span>
         </button>
         <button class="swap" :aria-label="t('swap')" :disabled="session.sourceMode.value === 'detected'" @click="swap">
           <Icon name="swap" :size="19" />
@@ -308,37 +331,34 @@ async function askFromCenter() {
         </button>
       </div>
 
-      <!-- stream -->
-      <div class="stream-card glass" :class="{ face: mode === 'face', big: mode === 'big' }">
-        <div class="stream-head">
-          <span class="dotstat" :class="{ ok: running }" />
-          <span class="st" :class="{ ok: status === 'connected' }">{{ t(session.statusKey.value) }}</span>
-          <span v-if="fileProgress" class="meta">
-            {{ fileProgress.total ? `${Math.round((fileProgress.sent / fileProgress.total) * 100)}%` : "…" }}
-          </span>
-          <span class="spacer" />
-          <template v-if="lines.length">
-            <button class="exp" @click="exportRows('txt')">TXT</button>
-            <button class="exp" @click="exportRows('srt')">SRT</button>
-            <button class="exp" :aria-label="t('clear')" @click="lines = []">
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.6a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.6"/></svg>
-            </button>
-          </template>
-          <button class="exp" :aria-label="t('fullscreenSub')" @click="mode = 'big'">
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>
+      <!-- stream: cardless — history lines run full-width, the status row stands alone above
+           and the live sentence carries its own emphasis card (LiveCard) below -->
+      <div v-if="mode !== 'big'" class="stream-head">
+        <span class="dotstat" :class="{ ok: running }" />
+        <span class="st" :class="{ ok: status === 'connected' }">{{ t(session.statusKey.value) }}</span>
+        <span v-if="fileProgress" class="meta">
+          {{ fileProgress.total ? `${Math.round((fileProgress.sent / fileProgress.total) * 100)}%` : "…" }}
+        </span>
+        <span v-if="running" class="lvl"><i :style="{ transform: 'scaleX(' + Math.min(1, session.level.value) + ')' }" /></span>
+        <span class="spacer" />
+        <template v-if="lines.length">
+          <button class="exp" @click="exportRows('txt')">TXT</button>
+          <button class="exp" @click="exportRows('srt')">SRT</button>
+          <button class="exp" :aria-label="t('clear')" @click="lines = []">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.6a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.6"/></svg>
           </button>
-        </div>
+        </template>
+        <button class="exp" :aria-label="t('fullscreenSub')" @click="mode = 'big'">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>
+        </button>
+      </div>
+      <div class="stream-area" :class="{ big: mode === 'big' }">
         <div class="stream-half top">
-          <StreamList :lines="lines" :empty="emptyText" :big="mode === 'big'" />
-        </div>
-        <!-- face-to-face: the lower half turns 180° toward the person opposite -->
-        <div v-if="mode === 'face'" class="stream-half bottom">
-          <div class="flip">
-            <div class="mini-head">{{ langName(settings.targetLang, locale) }}</div>
-            <StreamList :lines="lines" big />
-          </div>
+          <StreamList :lines="lines" :empty="emptyText" :big="mode === 'big'" :live="mode !== 'normal'" />
         </div>
       </div>
+      <!-- Normal mode keeps the live sentence separate from the scrollable history. -->
+      <LiveCard v-if="mode === 'normal'" />
 
       <p v-if="errorMsg" class="err-line" role="alert" :aria-label="errorMsg">{{ errorMsg }}</p>
       <p v-else-if="warnMsg" class="warn-line" role="status" :aria-label="warnMsg">{{ warnMsg }}</p>
@@ -349,10 +369,6 @@ async function askFromCenter() {
         <button class="tool" :class="{ on: native.visible }" :aria-label="t('subTitle')" @click="toggleSub">
           <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1.5" y="3" width="13" height="10" rx="2.4"/><path d="M4.5 9.4h4M4.5 6.8h7"/></svg>
           <span>{{ t("dockSub") }}</span>
-        </button>
-        <button v-if="PROTOCOLS[settings.protocol].twoWay" class="tool" :class="{ on: mode === 'face' }" :title="t('faceModeHint')" @click="toggleFace">
-          <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v13M8 5 5.5 2.5M8 5l2.5-2.5M8 11 5.5 13.5M8 11l2.5 2.5"/></svg>
-          <span>{{ t("faceMode") }}</span>
         </button>
         <button class="tool" :class="{ on: settings.speak && !session.speakBlocked.value }" @click="drawer = 'speak'">
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.5 7 8H4v4h3l4 3.5z"/><path d="M14 7.6a3.4 3.4 0 0 1 0 4.8"/></svg>
@@ -376,7 +392,7 @@ async function askFromCenter() {
     <!-- ══ SETTINGS ══ -->
     <div v-show="page === 'settings'" class="page sub">
       <header class="topbar">
-        <button class="icobtn sm" :aria-label="t('back')" @click="page = 'home'">
+        <button class="icobtn sm back" :aria-label="t('back')" @click="page = 'home'">
           <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
         </button>
         <div class="pt">
@@ -462,15 +478,12 @@ async function askFromCenter() {
               <b>{{ t("streamSrcSize") }}<output>{{ settings.stream.srcSize }}</output></b>
               <input v-model.number="settings.stream.srcSize" class="m-range" type="range" :min="STREAM_SIZE.min" :max="STREAM_SIZE.max" />
             </label>
-            <label class="m-row m-pick">
-              <span class="m-tx"><b>{{ t("theme") }}</b></span>
-              <select v-model="settings.theme">
-                <option value="system">{{ t("themeSystem") }}</option>
-                <option value="light">{{ t("themeLight") }}</option>
-                <option value="dark">{{ t("themeDark") }}</option>
-              </select>
-              <svg class="m-chev" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
-            </label>
+            <div class="m-field">
+              <b>{{ t("theme") }}</b>
+              <div class="m-seg" role="group" :aria-label="t('theme')">
+                <button v-for="[value, label] in THEME_OPTIONS" :key="value" :class="{ on: settings.theme === value }" :aria-pressed="settings.theme === value" @click="settings.theme = value">{{ t(label) }}</button>
+              </div>
+            </div>
             <button class="m-row" @click="drawer = 'uilang'">
               <span class="m-tx"><b>{{ t("uiLang") }}</b></span>
               <span class="m-val">{{ settings.uiLang === "system" ? t("uiSystem") : settings.uiLang === "zh" ? "简体中文" : "English" }}</span>
@@ -502,7 +515,7 @@ async function askFromCenter() {
               <span class="m-tx"><b>{{ t("historySave") }}</b><small>{{ t("historyHint") }}</small></span>
               <span class="sw" :class="{ on: settings.history }" />
             </button>
-            <button class="m-row" @click="drawer = 'history'">
+            <button class="m-row" @click="page = 'history'">
               <span class="m-tx"><b>{{ t("historyBrowse") }}</b></span>
               <svg class="m-chev" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 4 4 4-4 4"/></svg>
             </button>
@@ -524,10 +537,24 @@ async function askFromCenter() {
       </div>
     </div>
 
+    <!-- ══ TRANSLATION HISTORY ══ -->
+    <div v-show="page === 'history'" class="page sub">
+      <header class="topbar">
+        <button class="icobtn sm back" :aria-label="t('back')" @click="page = 'settings'">
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
+        </button>
+        <div class="pt">
+          <div class="pt1">{{ t("history") }}</div>
+          <div class="pt2">{{ t("historyMobileSub") }}</div>
+        </div>
+      </header>
+      <History v-if="page === 'history'" mobile />
+    </div>
+
     <!-- ══ PERMISSION CENTER ══ -->
     <div v-show="page === 'perms'" class="page sub">
       <header class="topbar">
-        <button class="icobtn sm" :aria-label="t('back')" @click="page = 'settings'">
+        <button class="icobtn sm back" :aria-label="t('back')" @click="page = 'settings'">
           <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
         </button>
         <div class="pt">
@@ -557,7 +584,8 @@ async function askFromCenter() {
         <div class="card flat">
           <span class="tint g"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8.5a6 6 0 0 0-12 0c0 6-2.5 7.5-2.5 7.5h17S18 14.5 18 8.5"/><path d="M13.7 20a2 2 0 0 1-3.4 0"/></svg></span>
           <span class="tx"><b>{{ t("pmNotif") }}</b><small>{{ t("pmNotifSub") }}</small></span>
-          <span class="statpill g">{{ perms.notif ? t("pmOn") : t("pmUnset") }}</span>
+          <button v-if="!perms.notif" class="chipm warn" @click="openNotificationSettings">{{ t("pmGo") }}</button>
+          <span v-else class="statpill g">{{ t("pmOn") }}</span>
         </div>
 
         <div class="card flat">
@@ -577,8 +605,7 @@ async function askFromCenter() {
 
     <!-- ══ drawers ══ -->
     <DiagnosticsSheet v-if="drawer === 'diagnostics'" @close="drawer = null" />
-    <History v-if="drawer === 'history'" @close="drawer = null" />
-    <OverlaySheet v-if="drawer === 'overlay'" @close="drawer = null" @toggle="toggleOverlay" @fullscreen="drawer = null; mode = 'big'" />
+    <OverlaySheet v-if="drawer === 'overlay'" @close="drawer = null" @toggle="toggleOverlay" />
     <SourceSheet v-if="drawer === 'src'" @close="drawer = null" />
     <LangSheet v-if="drawer === 'lang'" :side="langSide" @close="drawer = null" />
     <SpeakSheet v-if="drawer === 'speak'" @close="drawer = null" />
@@ -614,6 +641,8 @@ async function askFromCenter() {
 }
 .page { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 12px; }
 .page.sub { gap: 6px; }
+.page.sub .topbar { gap: 4px; }
+.page.sub .topbar .back { width: 32px; height: 32px; border-radius: 0; background: transparent; box-shadow: none; }
 
 /* ---------- topbar ---------- */
 .topbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 2px; }
@@ -651,6 +680,7 @@ async function askFromCenter() {
 .langcard .side { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 14px; text-align: left; }
 .langcard .side.right { text-align: right; }
 .cap { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.det { display: block; margin-top: 2px; font-size: 10.5px; font-weight: 700; color: var(--accent); }
 .val { display: block; margin-top: 3px; font-size: 15px; font-weight: 600; letter-spacing: -0.015em; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .val.dim { color: var(--ink-3); }
 .val.strong { font-size: 17px; font-weight: 730; letter-spacing: -0.02em; color: var(--ink); }
@@ -658,9 +688,12 @@ async function askFromCenter() {
 .swap:disabled { opacity: 0.35; }
 
 /* ---------- stream ---------- */
-.stream-card { flex: 1; min-height: 0; border-radius: 26px; display: flex; flex-direction: column; overflow: hidden; }
-.stream-card.face { border-radius: 0; }
-.stream-head { flex: none; padding: 14px 18px 10px; display: flex; align-items: center; gap: 9px; }
+/* History lines run full-width; the live sentence carries its own emphasis card below. */
+.stream-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.stream-head { flex: none; padding: 2px 2px 6px; display: flex; align-items: center; gap: 9px; }
+/* Input meter beside the status: a thin track that fills at the level-poll cadence. */
+.lvl { flex: 0 1 120px; height: 4px; border-radius: 999px; background: var(--shade); overflow: hidden; }
+.lvl i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transform-origin: left; transform: scaleX(0); transition: transform 0.12s linear; }
 .dotstat { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
 .dotstat.ok { background: var(--ok); box-shadow: 0 0 9px var(--ok); }
 .st { font-size: 12.5px; font-weight: 700; }
@@ -669,23 +702,23 @@ async function askFromCenter() {
 .exp { min-width: 32px; height: 30px; padding: 0 9px; display: grid; place-items: center; border-radius: 10px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em; color: var(--ink-2); background: var(--shade); }
 .stream-head .exp + .exp { margin-left: -3px; }
 .stream-half { flex: 1; min-height: 0; display: flex; }
-.stream-half.bottom { border-top: 1px solid var(--hairline); }
-.flip { flex: 1; min-height: 0; display: flex; flex-direction: column; transform: rotate(180deg); }
-.mini-head { padding: 8px 18px 0; font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); }
-/* Full screen: an opaque layer over everything (the glass would let the home page show
-   through), with the safe areas honoured and the head replaced by one exit control. */
-.stream-card.big {
-  position: fixed; inset: 0; z-index: 20; border-radius: 0; background: var(--canvas); box-shadow: none;
+/* Full screen: an opaque layer over everything (the page would show through otherwise),
+   with the safe areas honoured and the head replaced by one exit control. */
+.stream-area.big {
+  position: fixed; inset: 0; z-index: 20; background: var(--canvas);
   padding: calc(env(safe-area-inset-top) + 64px) 12px calc(env(safe-area-inset-bottom) + 16px);
 }
-.stream-card.big .stream-head { display: none; }
 
 .err-line, .warn-line { flex: none; margin: 0; text-align: center; font-size: 12px; font-weight: 600; line-height: 1.45; }
 .err-line { color: var(--danger); user-select: text; }
 .warn-line { color: #b7791f; }
 
 /* ---------- dock ---------- */
-.dock { flex: none; display: flex; gap: 8px; align-items: center; }
+.dock { flex: none; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 0 8px calc(8px + env(safe-area-inset-bottom)); }
+.dock .tool:first-child { order: 1; }
+.dock .go { order: 2; flex: none; width: 68px; height: 68px; padding: 0; flex-direction: column; gap: 2px; font-size: 10px; }
+.dock .go svg { width: 19px; height: 19px; }
+.dock .tool:nth-child(2) { order: 3; }
 .tool {
   width: 58px; height: 56px; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   border-radius: 17px; background: var(--shade); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--hairline);
@@ -720,8 +753,8 @@ async function askFromCenter() {
 
 /* ---------- settings ---------- */
 .pt { flex: 1; }
-.pt1 { font-size: 22px; font-weight: 730; letter-spacing: -0.03em; }
-.pt2 { font-size: 11px; color: var(--ink-3); font-weight: 600; margin-top: 2px; }
+.pt1 { font-size: 20px; line-height: 1.15; font-weight: 730; letter-spacing: -0.03em; }
+.pt2 { font-size: 10px; line-height: 1.15; color: var(--ink-3); font-weight: 600; margin-top: 1px; }
 .settings-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 22px; padding-bottom: 8px; }
 section { display: flex; flex-direction: column; }
 .vendor-tile { width: 34px; height: 34px; flex: none; border-radius: 10px; display: grid; place-items: center; background: var(--glass-hi); box-shadow: inset 0 0 0 1px var(--hairline); }

@@ -8,9 +8,21 @@ import { pathToFileURL } from 'node:url';
 import { startSessionPeer } from './session-server.mjs';
 
 export function targetBounds(xml, labels, className) {
+  // A caller may explicitly select the sole visible editor when an old WebView
+  // omits its accessible name. Never guess if there is more than one candidate.
+  if (!labels.length && className) {
+    const candidates = [...xml.matchAll(/<node\b[^>]*>/g)]
+      .filter(([node]) => node.includes(`class="${className}"`))
+      .map(([node]) => targetBounds(node, [node.match(/\btext="([^"]*)"/)?.[1] ?? ''], className))
+      .filter(Boolean);
+    return candidates.length === 1 ? candidates[0] : null;
+  }
   for (const partial of [false, true]) {
+  // Prefer the control over a separate TextView with the same accessible name.
+  for (const clickable of className ? [false] : [true, false]) {
   let labelledField = false;
   for (const node of xml.matchAll(/<node\b[^>]*>/g)) {
+    if (clickable && !node[0].includes('clickable="true"')) continue;
     const text = node[0].match(/\btext="([^"]*)"/)?.[1];
     const desc = node[0].match(/\bcontent-desc="([^"]*)"/)?.[1];
     // Android accessibility may merge a button's title and subtitle into one node.
@@ -30,6 +42,7 @@ export function targetBounds(xml, labels, className) {
     if (!bounds) continue;
     const [, x1, y1, x2, y2] = bounds.map(Number);
     if (x2 > x1 && y2 > y1) return [Math.round((x1 + x2) / 2), Math.round((y1 + y2) / 2)];
+  }
   }
   }
   return null;
@@ -52,11 +65,37 @@ export function overlayFrame(dump) {
   return x2 > x1 && y2 > y1 ? [x1, y1, x2, y2] : null;
 }
 
+export function overlayLocked(dump) {
+  const section = dump.split(/(?=Window #\d+ Window\{)/).find(part =>
+    /^Window #\d+ Window\{[^\n]*ReaLingo subtitles/.test(part));
+  return !!section && section.includes('mHasSurface=true') && /\bNOT_TOUCHABLE\b/.test(section);
+}
+
+export function liveNotification(dump, packageId) {
+  return dump.split(/(?=NotificationRecord\()/).find(part =>
+    part.match(/^NotificationRecord\([^\n]*\bpkg=([^\s)]+)/)?.[1] === packageId &&
+    /^NotificationRecord\([^\n]*\bid=73\b/.test(part)) ?? '';
+}
+
 export function keyboardVisible(dump) {
   const keyboard = dump.split(/(?=Window #\d+ Window\{)/).find(section =>
     /^Window #\d+ Window\{[^\n]*\bInputMethod\}/.test(section));
   return !!keyboard && /\bmViewVisibility=0x0\b/.test(keyboard) &&
     /\bmHasSurface=true\b/.test(keyboard) && /\bisOnScreen=true\b/.test(keyboard);
+}
+
+export async function dismissKeyboard(readWindows, back, sleep) {
+  let hidden = 0, sentBack = false;
+  // IME visibility can lag behind input injection. Require stable hidden snapshots;
+  // a single early false used to let scroll gestures type into the soft keyboard.
+  for (let i = 0; i < 12; i++) {
+    await sleep(250);
+    if (keyboardVisible(readWindows())) {
+      hidden = 0;
+      if (!sentBack) { back(); sentBack = true; }
+    } else if (++hidden === 3) return;
+  }
+  throw new Error('keyboard did not close before navigation');
 }
 
 export function editorFocused(xml, labels) {
@@ -91,6 +130,9 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
   const adb = (...args) => execFileSync('adb', args.map(String), { encoding: 'utf8', timeout: 30000 });
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const component = `${packageId}/com.nosugark.realingo.MainActivity`;
+  // Use the same root intent as the launcher, including Android's root-Back semantics.
+  const launchApp = () => assert.doesNotMatch(adb('shell', 'am', 'start', '-W',
+    '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-n', component), /Error:|Exception/);
   const peer = await startSessionPeer(8766);
   let lastXml = '';
   let launcherDismissed = false;
@@ -112,7 +154,7 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     }
     return lastXml;
   };
-  const waitFor = async (labels) => {
+  const waitFor = async (labels, className) => {
     for (let i = 0; i < 20; i++) {
       // Yield between blocking adb calls so worker replies and UI updates can settle.
       await sleep(100);
@@ -121,13 +163,27 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
       for (const pid of pids.split(/\s+/)) appPids.add(pid);
       let xml;
       try { xml = ui(); } catch { await sleep(500); continue; }
-      const bounds = targetBounds(xml, labels);
+      const bounds = targetBounds(xml, labels, className);
       if (bounds) return bounds;
       await sleep(500);
     }
     throw new Error(`phone UI did not render ${labels.join(' / ')}`);
   };
-  const tap = async (labels) => adb('shell', 'input', 'tap', ...await waitFor(labels));
+  const tap = async (labels, className) => adb('shell', 'input', 'tap', ...await waitFor(labels, className));
+  const back = () => adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
+  const notificationAction = async labels => {
+    adb('shell', 'cmd', 'statusbar', 'expand-notifications');
+    await tap(labels);
+    adb('shell', 'cmd', 'statusbar', 'collapse');
+  };
+  const notificationShows = async labels => {
+    for (let i = 0; i < 20; i++) {
+      const notification = liveNotification(adb('shell', 'dumpsys', 'notification', '--noredact'), packageId);
+      if (labels.some(label => notification.includes(`"${label}"`))) return;
+      await sleep(250);
+    }
+    throw new Error(`live notification did not offer ${labels.join(' / ')}`);
+  };
   const grantProjection = () => tap(['Start', '开始', 'Start now', '立即开始', 'Start recording', '开始录制', 'Start sharing', '开始共享', 'Share screen', '共享屏幕']);
   const overlay = async (accept = () => true, retryGesture) => {
     for (let i = 0; i < 30; i++) {
@@ -141,6 +197,7 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     throw new Error('native subtitle overlay did not acquire a visible surface');
   };
   const scrollTo = async (labels, className, direction = 'down') => {
+    if (keyboardVisible(adb('shell', 'dumpsys', 'window', 'windows'))) await hideKeyboard();
     const size = adb('shell', 'wm', 'size').match(/(\d+)x(\d+)/);
     const width = Number(size?.[1] ?? 1080), height = Number(size?.[2] ?? 1920);
     for (let i = 0; i < 8; i++) {
@@ -152,16 +209,12 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
       adb('shell', 'input', 'swipe', Math.round(width / 2), Math.round(height * (move === 'down' ? .78 : .35)), Math.round(width / 2), Math.round(height * (move === 'down' ? .35 : .78)), 350);
       await sleep(400);
     }
-    throw new Error(`Could not scroll to ${labels.join(' / ')}`);
+    throw new Error(`Could not scroll to ${labels.join(' / ') || `unique ${className}`}`);
   };
   const screenshot = (name) => writeFileSync(join(output, `${name}.png`),
     execFileSync('adb', ['exec-out', 'screencap', '-p'], { timeout: 30000, maxBuffer: 16 * 1024 * 1024 }));
-  const hideKeyboard = async () => {
-    if (keyboardVisible(adb('shell', 'dumpsys', 'window', 'windows'))) {
-      adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
-      await sleep(400);
-    }
-  };
+  const hideKeyboard = () => dismissKeyboard(
+    () => adb('shell', 'dumpsys', 'window', 'windows'), back, sleep);
   const fill = async (labels, text, direction = 'down', replace = false) => {
     let focused = false;
     for (let i = 0; i < 4; i++) {
@@ -170,7 +223,7 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
       try { focused = editorFocused(ui(), labels); } catch { continue; }
       if (focused) break;
     }
-    assert.ok(focused, `editor did not gain focus: ${labels.join(' / ')}`);
+    assert.ok(focused, `editor did not gain focus: ${labels.join(' / ') || 'unique editor'}`);
     if (replace) {
       adb('shell', 'input', 'keycombination', 'KEYCODE_CTRL_LEFT', 'KEYCODE_A');
       adb('shell', 'input', 'keyevent', 'KEYCODE_DEL');
@@ -196,7 +249,7 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     try { adb('logcat', '-b', 'crash', '-c'); } catch {}
     for (let launch = 0; launch < 2; launch++) {
       adb('shell', 'am', 'force-stop', packageId);
-      assert.doesNotMatch(adb('shell', 'am', 'start', '-W', '-n', component), /Error:|Exception/);
+      launchApp();
       await waitFor(['Start', '开始翻译']);
       await sleep(3000);
       await waitFor(['Settings', '设置']);
@@ -206,25 +259,50 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     await tap(['About', '关于']);
     await waitFor(['MIT', 'License MIT', '许可 MIT']);
     screenshot('about');
-    await tap(['Close', '关闭']);
+    back(); // A system back dismisses the sheet before allowing the app to exit.
     await tap(['Settings', '设置']);
     await scrollTo(['Permission center', '权限中心']);
     screenshot('settings');
     await tap(['Permission center', '权限中心']);
     await waitFor(['Back', '返回']);
     screenshot('permissions');
-    await tap(['Back', '返回']);
-    await tap(['Back', '返回']);
+    back();
+    await scrollTo(['Browse history', '查看历史记录']);
+    await tap(['Browse history', '查看历史记录']);
+    await waitFor(['Search, filter, and export sessions', '搜索、筛选并导出记录']);
+    screenshot('history-empty');
+    back();
+    await waitFor(['Settings', '设置']);
+    back();
+    await waitFor(['Start', '开始翻译']);
+    const homePid = adb('shell', 'pidof', packageId).trim();
+    back();
+    await sleep(700);
+    const foreground = adb('shell', 'dumpsys', 'window', 'windows').split('\n').find(line => line.includes('mCurrentFocus=')) ?? '';
+    assert.ok(!foreground.includes(packageId), 'home back hands control to Android');
+    launchApp();
+    await waitFor(['Start', '开始翻译']);
+    assert.equal(adb('shell', 'pidof', packageId).trim(), homePid, 'root back and reopen retain the native runtime');
+    await tap(['Speak', '朗读']);
+    await waitFor(['Play through', '播放到']);
+    await tap(['Play through', '播放到'], 'android.view.View');
+    await waitFor(['Speaker', '扬声器']);
+    screenshot('speech-output-options');
+    back(); // Android's native select popup closes before the speech sheet.
+    await fill(['Voice', '音色'], 'Tina');
+    await waitFor(['Tina']);
+    screenshot('speech-voice-search');
+    back();
     await waitFor(['Start', '开始翻译']);
     adb('shell', 'input', 'keyevent', 'KEYCODE_HOME');
     await sleep(1000);
-    adb('shell', 'am', 'start', '-W', '-n', component);
+    launchApp();
     await waitFor(['Start', '开始翻译']);
     // Runtime revocation forces a fresh process. Starting after a grant/revoke must
     // remain possible even though the device list and permission state changed.
     adb('shell', 'pm', 'grant', packageId, 'android.permission.RECORD_AUDIO');
     adb('shell', 'am', 'force-stop', packageId);
-    adb('shell', 'am', 'start', '-W', '-n', component);
+    launchApp();
     await waitFor(['Start', '开始翻译']);
     await tap(['Audio source', '音频来源']);
     await tap(['Test microphone', '测试麦克风']);
@@ -246,7 +324,7 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     await sleep(1000);
     assert.match(adb('shell', 'dumpsys', 'activity', 'activities'), /Settings|settings/, 'overlay authorization opens Android settings');
     adb('shell', 'appops', 'set', packageId, 'SYSTEM_ALERT_WINDOW', 'allow');
-    adb('shell', 'am', 'start', '-W', '-n', component);
+    launchApp();
     // Returning from authorization opens the requested overlay automatically.
     // UIAutomator dumps only the focused window; this intentionally non-focusable
     // native overlay is verified through WindowManager and real input instead.
@@ -274,7 +352,7 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     adb('shell', 'input', 'tap', Math.round(resized[2] - 32 * density), Math.round(resized[1] + 24 * density));
     await sleep(500);
     assert.equal(overlayFrame(adb('shell', 'dumpsys', 'window', 'windows')), null, 'the native close button removes the surface');
-    adb('shell', 'am', 'start', '-W', '-n', component);
+    launchApp();
     await tap(['Close', '关闭']);
     await tap(['Settings', '设置']);
     await fill(['Hotwords', '热词'], 'AI=Artificial%sIntelligence');
@@ -291,6 +369,8 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     await fill(['API Key'], 'android-ci-key', 'up');
     await tap(['Advanced', '高级']); // region / workspace / URL sit in a collapsed group
     await fill(['Custom URL', '自定义地址'], peer.url);
+    await scrollTo(['Keep translation history', '记录翻译历史']);
+    await tap(['Keep translation history', '记录翻译历史']);
     screenshot('session-settings');
     await tap(['Back', '返回']);
     await waitFor(['Start', '开始翻译']);
@@ -302,6 +382,57 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     await tap(['Stop', '停止']);
     await waitFor(['Start', '开始翻译']);
     assert.equal((await peer.snapshot()).at(-1).finished, true, 'Stop sends the protocol finish frame');
+    await tap(['Settings', '设置']);
+    await scrollTo(['Browse history', '查看历史记录']);
+    await tap(['Browse history', '查看历史记录']);
+    await waitFor(['Android session verified.']);
+    screenshot('history-recorded');
+    // This history page has one editor; WebView 124 omits both its name and hint.
+    await fill([], 'verified');
+    await waitFor(['Android session verified.']);
+    back();
+    await waitFor(['Settings', '设置']);
+    back();
+    await waitFor(['Start', '开始翻译']);
+
+    // Exercise native lock + live text updates, then operate the actual notification.
+    adb('shell', 'pm', 'grant', packageId, 'android.permission.POST_NOTIFICATIONS');
+    await tap(['Start', '开始翻译']);
+    await waitFor(['Android session verified.']);
+    await peer.pushSubtitle();
+    await tap(['Subtitle overlay', '字幕窗']);
+    await tap(['Show overlay', '显示字幕窗']);
+    await overlay();
+    back();
+    const frame = await overlay();
+    const screenHeight = Number(adb('shell', 'wm', 'size').match(/\d+x(\d+)/)?.[1]);
+    assert.ok(frame[3] - frame[1] < screenHeight * .7, 'long subtitles stay inside a capped scroll area');
+    adb('shell', 'input', 'tap', Math.round(frame[2] - 72 * density), Math.round(frame[1] + 24 * density));
+    for (let i = 0; i < 20 && !overlayLocked(adb('shell', 'dumpsys', 'window', 'windows')); i++) await sleep(100);
+    assert.equal(overlayLocked(adb('shell', 'dumpsys', 'window', 'windows')), true, 'native lock enables touch-through');
+    const translations = (await peer.snapshot()).at(-1).translations;
+    // Only stream while inspecting WindowManager: UIAutomator requires an idle UI.
+    for (let i = 0; i < 12; i++) { await peer.pushSubtitle(); await sleep(120); }
+    assert.ok((await peer.snapshot()).at(-1).translations > translations, 'subtitles continued after locking');
+    assert.equal(overlayLocked(adb('shell', 'dumpsys', 'window', 'windows')), true, 'streaming text must not undo the lock');
+    screenshot('overlay-locked-streaming');
+    await notificationAction(['Unlock', '解锁']);
+    for (let i = 0; i < 20 && overlayLocked(adb('shell', 'dumpsys', 'window', 'windows')); i++) await sleep(150);
+    assert.equal(overlayLocked(adb('shell', 'dumpsys', 'window', 'windows')), false);
+    const unlocked = await overlay();
+    adb('shell', 'input', 'tap', Math.round(unlocked[2] - 32 * density), Math.round(unlocked[1] + 24 * density));
+    await notificationShows(['Sub on', '字幕开']);
+    await notificationAction(['Sub on', '字幕开']);
+    await overlay();
+    await notificationShows(['Sub off', '字幕关']);
+    await notificationAction(['Stop', '停止']);
+    await waitFor(['Start', '开始翻译']);
+    await notificationAction(['Start', '开始']);
+    await waitFor(['Stop', '停止']);
+    await notificationAction(['Stop', '停止']);
+    await waitFor(['Start', '开始翻译']);
+    await notificationAction(['Sub off', '字幕关']);
+    await peer.setMode('normal');
     await tap(['Audio source', '音频来源']);
     await tap(['System audio', '系统声音']);
     await tap(['Close', '关闭']);
@@ -369,10 +500,10 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     await tap(['Close', '关闭']);
     await tap(['Back', '返回']);
     adb('shell', 'pm', 'revoke', packageId, 'android.permission.RECORD_AUDIO');
-    adb('shell', 'am', 'start', '-W', '-n', component);
+    launchApp();
     await waitFor(['Start', '开始翻译']);
     const crashes = adb('logcat', '-v', 'threadtime', '-b', 'crash', '-d');
-    assert.doesNotMatch(appCrashLines(crashes, appPids), /FATAL EXCEPTION|Fatal signal|Abort message/);
+    assert.doesNotMatch(appCrashLines(crashes, appPids), /FATAL EXCEPTION|Fatal signal|Abort message|FORTIFY:/);
     console.log('Android smoke passed: launches, navigation, microphone capture, native floating subtitles on Home, system capture consent/cancellation, permission revocation');
   } finally {
     writeFileSync(join(output, 'session-peer.json'), JSON.stringify(await peer.snapshot(), null, 2));
@@ -384,6 +515,9 @@ export async function smokeAndroid(apk, packageId = 'com.nosugark.realingo.debug
     saveLog('crash.txt', ['logcat', '-b', 'crash', '-d']);
     saveLog('logcat.txt', ['logcat', '-d']);
     saveLog('windows.txt', ['shell', 'dumpsys', 'window', 'windows']);
+    try {
+      writeFileSync(join(output, 'notification.txt'), liveNotification(adb('shell', 'dumpsys', 'notification', '--noredact'), packageId));
+    } catch (e) { console.error(`Could not collect notification: ${e.message}`); }
     try { screenshot('last-screen'); } catch (e) { console.error(e.message); }
   }
 }

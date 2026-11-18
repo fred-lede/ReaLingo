@@ -57,6 +57,9 @@ cd src-tauri && cargo test --lib
   （`openai_streams_are_cut_into_turns_at_sentence_ends`）。
 - 有分支的解析、配对、时间计算都要有测试；协议相关的测试用实测帧。
 - 前端没有测试框架。前端里有分支的纯计算（如 SRT 时间轴）改动后，至少用 node 跑一遍边界情况再提交。
+- 新增交互和缺陷修复补充能检查实际行为的回归测试；涉及 Android Activity、通知、权限或悬浮窗时，
+  同步更新设备冒烟用例。Node 契约检查、编译和设备运行分别记录，不能互相替代。
+  CI 分层与发布前设备验证要求见 [Android 测试流程](development/android-testing.md)。
 
 ## 界面文案
 
@@ -74,10 +77,32 @@ cd src-tauri && cargo test --lib
 
 - 版本号只有 `src-tauri/Cargo.toml` 一处；发布说明写在 `.github/release-notes/v<版本>.md`。
   发布流程见 README「开发」一节。
+- 版本号遵循 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)：稳定版本的
+  修复递增 PATCH、向后兼容的新功能递增 MINOR、不兼容变更递增 MAJOR；`0.x` 阶段的不兼容变更
+  递增 MINOR 并明确说明迁移影响。预发布使用 `-alpha.N`、`-beta.N` 或 `-rc.N`。
+
+### 发布说明（Release notes）
+
+- 参考 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) 编写面向用户的变更摘要，
+  按需使用以下分类，省略空分类：新增（Added）、变更（Changed）、弃用（Deprecated）、
+  移除（Removed）、修复（Fixed）、安全（Security）。安装说明、升级迁移和已知问题可单列章节。
+- 文件保留 `<!-- zh -->`、`<!-- en -->` 两个语言标记，依次提供内容对应的中文和英文，
+  供应用按界面语言提取。每个语言段以 `## [版本] - YYYY-MM-DD` 开头，日期为实际发布日期，
+  分类使用三级标题；预发布写完整版本号（如 `0.9.0-beta.1`）。
+- 每条说明写清用户可观察到的变化及适用平台；修复说明原问题与修复结果。
+  Conventional Commits 可用于整理候选条目，最终需人工筛选、合并并改写，提交列表仅作追溯补充。
+  不兼容变更、迁移步骤、安全影响和已知限制必须明确；验证结论只写实际覆盖的平台与场景。
+- 发版顺序：确认上一发布 tag 至目标提交的实际差异 → 更新版本及对应 release notes →
+  核对中英文内容、版本、日期和迁移说明 → 将修改提交并推送 main → 同一提交的 CI 与
+  Android 测试通过 → 在该提交创建并推送匹配版本的 tag → 核对 Release 正文与安装包。
+  打 tag 前必须提交对应说明文件；GitHub 自动生成的提交列表不能替代发布说明。
 
 ## 提交
 
-- 提交信息用中文 conventional commit：`type: 描述`（`feat` / `fix` / `docs` / `chore(release)` 等），
-  正文写为什么这样改。
+- 提交信息遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)：
+  `type(scope): description`，`scope` 可选；描述可用中文或英文，简明说明改动。
+  新功能用 `feat`，修复用 `fix`；其他常用类型包括 `docs`、`refactor`、`test`、`build`、`ci`、`chore`。
+- 正文和页脚按需补充：正文说明修改原因、背景或取舍，页脚可关联 issue。
+  破坏性变更用 `type(scope)!: description` 或 `BREAKING CHANGE: 说明` 页脚标记。
 - **按功能分开提交**，一个提交只做一件事；一个文件混了几件事就按代码段拆开。
 - 仓库文本文件统一 LF 行尾。

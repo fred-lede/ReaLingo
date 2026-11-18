@@ -1,17 +1,19 @@
 import { reactive } from "vue";
 import { droid } from "./perms";
 import { t } from "../core/i18n";
+import { settings } from "../core/store";
 
 export const native = reactive({
   supported: !!droid && typeof droid.overlayStatus === "function",
-  granted: false, visible: false, ready: false, captureKind: "", systemState: "idle", error: "", frames: 0, width: 0,
+  granted: false, visible: false, ready: false, locked: false, lockChanged: false, captureKind: "", systemState: "idle", error: "", frames: 0, width: 0,
   systemSupported: !!droid && typeof droid.systemAudioSupported === "function" && droid.systemAudioSupported(),
 });
 
 export function refreshNative() {
   if (!native.supported || !droid) return;
   const state = JSON.parse(droid.overlayStatus()) as Record<string, unknown>;
-  for (const key of ["granted", "visible", "ready"] as const) native[key] = state[key] === true;
+  for (const key of ["granted", "visible", "ready", "locked", "lockChanged"] as const) native[key] = state[key] === true;
+  if (native.lockChanged) settings.sub.locked = native.locked;
   for (const key of ["captureKind", "systemState", "error"] as const) native[key] = typeof state[key] === "string" ? state[key] as string : "";
   native.frames = typeof state.frames === "number" && Number.isFinite(state.frames) ? state.frames : 0;
   native.width = typeof state.width === "number" && Number.isFinite(state.width) ? state.width : 0;

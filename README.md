@@ -75,7 +75,7 @@ macOS 升级后系统声音没反应：到 **系统设置 → 隐私与安全性
 2. 选择语言和音频来源：麦克风、系统声音或音频文件，再点「开始翻译」。
 3. 麦克风录音需要授权；系统声音需要 Android 10+，每次会话均需同意系统录制提示。部分应用不允许采集，受保护内容和通话可能静音。
 4. 跨应用字幕需要「显示在其他应用上层」权限；可拖动、缩放，锁定后触摸穿透。全屏字幕在应用内显示。
-5. 朗读可选扬声器、听筒或耳机，音色列表支持搜索；历史记录与 TXT/SRT 导出通过系统文件选择器保存。
+5. 朗读默认跟随系统输出；“播放到”可选择扬声器、听筒或已识别的蓝牙、有线、USB 等设备，停止后更改、下次开始时生效。开关与可搜索的音色列表在同一面板；历史记录与 TXT/SRT 导出通过系统文件选择器保存。
 
 权限中心和会话诊断可查看授权及音频上传状态。不同厂商的后台限制仍需在真机上验证。
 `.debug` 测试包和正式包是两个独立应用，旧测试包的设置和历史不会自动迁移。
@@ -244,13 +244,16 @@ macOS 和 Ubuntu 的安装包没法在 Windows 上交叉编译，由 `.github/wo
 发布流程是「先建草稿 → 四个平台分别上传 → **构建、同一提交的 main CI 与 Android 15/16 模拟器测试全部通过后**才公开发布」，
 所以任一平台挂掉时 release 会停在草稿状态，不会放出半套包。tag 与
 `src-tauri/Cargo.toml` 里的 `version` 不一致会直接失败，避免发出版本号对不上的包。
+Android CI 构建 ARM64 与 x86_64 双架构 APK：PR 跑单套模拟器，main 跑两种页大小，纯 Markdown 改动跳过重型任务；
+发版仍要求同一提交的两套模拟器实际通过，必要时手动运行完整测试，见 [Android 测试流程](development/android-testing.md)。
 
 版本号只有一处：`src-tauri/Cargo.toml` 的 `[package] version`。`tauri.conf.json` 不写
 `version` 字段，Tauri 会回落到 Cargo.toml；`package.json` 是 `private` 的，也不带版本号。
 CI 就按这一处校验 tag。预发布标签会标记为 Pre-release，不替换稳定版 Latest；Windows MSI 不接受文字预发布后缀，若发布 Beta 等版本须先配置独立的数字 MSI 版本。
 
-发布说明写在 `.github/release-notes/v<版本号>.md`，随 tag 一起提交；CI 建 release 时把它放在最前面，
-后面接 GitHub 自动生成的提交列表。没有这个文件就只有自动生成的部分。
+打 tag 前必须将发布说明提交到 `.github/release-notes/v<版本号>.md`；CI 建 release 时把它放在最前面，
+后面接 GitHub 自动生成的提交列表。说明按 Keep a Changelog 分类，保留对应的中英文内容；
+版本、格式及发布前核对要求见[编码规范「版本与发布」](CODING_STANDARDS.md#版本与发布)。
 
 ```bash
 # X.Y.Z 替换为要发布的版本；更新 Cargo.toml / Cargo.lock 和对应发布说明后提交

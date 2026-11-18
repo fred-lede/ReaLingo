@@ -165,7 +165,7 @@ pub struct Settings {
     #[serde(default)]
     pub translation_model_path: String,
     /// Phone only: where the voice plays: "" (the system's choice), "speaker", "earpiece"
-    /// or "headphones". See `player::output_kinds`.
+    /// or a "device|..." output identifier. The old "headphones" choice remains supported.
     #[serde(default)]
     pub output: String,
 
