@@ -293,6 +293,22 @@ RPM 声明 `webkit2gtk4.1`、Ayatana AppIndicator 共享库和 `pulseaudio-utils
 npm run tauri build
 ```
 
+macOS 26/27 请用 `npm run build:macos`。三个坑都在工具链，不在代码里：
+
+- bindgen 直接调 libclang，拿不到 SDK 的头文件目录，`llama-cpp-sys-2` 会报 `'stdio.h' file not found`。脚本导出 `SDKROOT="$(xcrun --show-sdk-path)"` 后即可生成绑定。
+- Rust 需 ≥ 1.96：rustc 1.96 以前的 strip 会把 LINKEDIT 字符串池写成 4 字节对齐，dyld（macOS 26/27）随即拒绝加载 proc-macro 的 dylib（rust-lang/rust#157750），表现为 `can't find crate for xxx_macros`。1.96+ 已修复，无需在 `[profile.release]` 里额外设置 `strip`。
+- DMG 打包跑 Finder AppleScript 排版，无 GUI 自动化权限的环境（CI、SSH）会报 `AppleEvent逾時 (-1712)`，脚本随之退出 64。此时改用下面手工命令（`--skip-jenkins` 跳过排版，DMG 内容不受影响）；或给终端授予「系统设置 → 隐私与安全性 → 自动化 → Finder」权限。
+- DMG 步骤中断会在 `target/release/bundle/macos/` 留下 `rw.*.dmg` 暂存文件，它会混进下一次打包并报「装置已经没有空间」，重建前先删掉它（`build-macos.sh` 已自动清理）。
+
+手工打 DMG（跳过排版）：
+
+```bash
+cd src-tauri/target/release/bundle/dmg
+./bundle_dmg.sh --volname "ReaLingo" --icon "ReaLingo.app" 180 170 \
+  --app-drop-link 420 185 --window-size 600 400 --hide-extension "ReaLingo.app" \
+  --skip-jenkins "ReaLingo_<版本>_aarch64.dmg" "../macos/"
+```
+
 测试（重采样、地址拼接、各接口的消息格式与字幕切分）：
 
 Android 的权限、会话、图标、版本码及 APK 启动验证见 [Android 测试与闪退排查](development/android-testing.md)。
