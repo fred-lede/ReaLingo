@@ -54,10 +54,13 @@ test('the main window converts the transcript at render time, stored lines untou
   assert.match(app, /convertTranscript\(current\.sourceStash, settings\.transcriptStyle, locale\)/);
   // The transcript script is not a translation target: only the source rows move.
   assert.doesNotMatch(app, /convertTranscript\((l|current)\.target/);
-  // The stored line stays what the engine emitted; only the export builders convert.
+  // The stored line stays what the engine emitted; only the export builders convert, and they
+  // write what the subtitle mode shows.
   assert.doesNotMatch(stream, /source: convertTranscript/);
-  assert.match(stream, /asShown\(l\.source\)/);
-  assert.doesNotMatch(stream, /asShown\(l\.target/);
+  assert.match(stream, /const source = asShown\(line\.source\)/);
+  assert.doesNotMatch(stream, /asShown\((line|l)\.target/);
+  assert.match(stream, /shownLines\((l|line)\)\.join\("\\n"\)/);
+  assert.match(stream, /const mode = settings\.sub\?\.mode \?\? "both"/);
   assert.match(stream, /if \(wantsTraditional\(settings\.transcriptStyle, locale\.value\)\) await ensureTraditional\(\)/);
 });
 
