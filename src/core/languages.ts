@@ -5,6 +5,7 @@ import { tw } from "./s2t";
 // `tts: true` = the model can also speak this language (the "read aloud" switch).
 const TABLE = `
 zh|中文|Chinese|1
+zh-TW|繁體中文|Traditional Chinese|1
 en|英语|English|1
 ja|日语|Japanese|1
 ko|韩语|Korean|1
@@ -100,6 +101,10 @@ const QWEN3_CODES = new Set(
 /** gpt-realtime-translate hears 70+ languages but speaks only these 13 (all tts-capable). */
 const OPENAI_CODES = new Set("es pt fr ja ru zh de ko hi id vi it en".split(" "));
 
+/** Qwen Livetranslate offers the table's languages except the script split its API
+ *  has no code for; its 18-language subset (the retired Qwen3) is handled separately. */
+const QWEN_CODES = new Set(LANGUAGES.map((l) => l.code).filter((c) => c !== "zh-TW"));
+
 /** Of this table, the ones Gemini Live Translate's 70+ language list does not include. */
 const GEMINI_MISSING = new Set("yue ast bs ceb ky tg".split(" "));
 const GEMINI_CODES = new Set(LANGUAGES.map((l) => l.code).filter((c) => !GEMINI_MISSING.has(c)));
@@ -138,8 +143,8 @@ export interface ProtocolInfo {
 }
 
 export const PROTOCOLS: Record<Protocol, ProtocolInfo> = {
-  qwen35: { vendor: "qwen", source: "either", speaks: "table", voices: "qwen", urlAsIs: false, twoWay: false, hub: [] },
-  qwen38: { vendor: "qwen", source: "detected", speaks: "table", voices: "qwen", urlAsIs: false, twoWay: false, hub: [] },
+  qwen35: { vendor: "qwen", source: "either", speaks: "table", voices: "qwen", langs: QWEN_CODES, urlAsIs: false, twoWay: false, hub: [] },
+  qwen38: { vendor: "qwen", source: "detected", speaks: "table", voices: "qwen", langs: QWEN_CODES, urlAsIs: false, twoWay: false, hub: [] },
   openai: { vendor: "openai", source: "detected", langs: OPENAI_CODES, speaks: "all", voices: null, urlAsIs: false, twoWay: false, hub: [] },
   gemini: { vendor: "gemini", source: "detected", langs: GEMINI_CODES, speaks: "all", voices: null, urlAsIs: true, twoWay: false, hub: [] },
   volc: { vendor: "volc", source: "named", langs: VOLC_CODES, speaks: VOLC_SPEAKS, voices: "volc", urlAsIs: true, twoWay: true, hub: ["zh", "en"] },
@@ -156,7 +161,7 @@ export const PRESETS: Record<Protocol, Preset[]> = {
   qwen35: [{ id: MODEL_QWEN3_5, name: "Qwen3.5", langs: 60 }],
   qwen38: [{ id: MODEL_QWEN3_8, name: "Qwen3.8", langs: 60 }],
   openai: [{ id: MODEL_OPENAI, name: "GPT-Realtime-Translate", langs: 13 }],
-  gemini: [{ id: MODEL_GEMINI, name: "Gemini 3.5 Live Translate", langs: 54 }],
+  gemini: [{ id: MODEL_GEMINI, name: "Gemini 3.5 Live Translate", langs: 55 }],
   volc: [{ id: MODEL_VOLC, name: "豆包同声传译 2.0", langs: 20 }],
 };
 

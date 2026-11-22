@@ -126,7 +126,10 @@ pub fn start(settings: &Settings, session: &str) -> Vec<u8> {
     let (source, target) = if settings.two_way {
         ("zhen".to_string(), "zhen".to_string())
     } else {
-        (settings.source_lang.clone(), settings.target_lang.clone())
+        // Volc's codes are plain ISO ("zh", "en"); a Traditional target has no distinct
+        // code, so coerce it to the single Chinese the service knows.
+        let coerce = |c: String| if c == "zh-TW" { "zh".to_string() } else { c };
+        (coerce(settings.source_lang.clone()), coerce(settings.target_lang.clone()))
     };
     // A preset only where it can speak the target; otherwise `CLONE` — asked for, or the
     // fallback for a preset that cannot speak this target (or a voice from another list).

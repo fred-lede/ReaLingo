@@ -429,11 +429,13 @@ impl Settings {
     }
 
     /// Target language as the service spells it: Gemini wants a script or regional variant
-    /// for the two languages where it distinguishes them.
+    /// for the languages where it distinguishes them.
     fn target_code(&self) -> &str {
         match (self.protocol, self.target_lang.as_str()) {
             (Protocol::Gemini, "zh") => "zh-Hans",
+            (Protocol::Gemini, "zh-TW") => "zh-Hant",
             (Protocol::Gemini, "pt") => "pt-BR",
+            (_, "zh-TW") => "zh",
             (_, code) => code,
         }
     }
@@ -497,7 +499,7 @@ impl Settings {
                 "session": {
                     "audio": {
                         "input": { "transcription": { "model": OPENAI_ASR_MODEL } },
-                        "output": { "language": self.target_lang }
+                        "output": { "language": self.target_code() }
                     }
                 }
             });
@@ -507,7 +509,7 @@ impl Settings {
         if self.source_lang != "auto" && !self.source_lang.is_empty() {
             transcription["language"] = self.source_lang.clone().into();
         }
-        let mut translation = serde_json::json!({ "language": self.target_lang });
+        let mut translation = serde_json::json!({ "language": self.target_code() });
         // Only when there is something to send: an empty `corpus` is not a documented
         // shape, and the endpoint's reaction to one is anyone's guess.
         let phrases = self.qwen_phrases();
@@ -865,6 +867,19 @@ mod tests {
         assert_eq!(with_param("wss://h/rt?a=1&", "key", "k"), "wss://h/rt?a=1&key=k");
         // A Gemini proxy URL that already carries its own key keeps it, rather than gaining two.
         assert_eq!(with_param("wss://h/rt?key=mine", "key", "k"), "wss://h/rt?key=mine");
+    }
+
+    #[test]
+    fn gemini_translates_into_traditional_chinese_as_zh_hant() {
+        let mut g = qwen(Region::Beijing, "llm-abc");
+        g.protocol = Protocol::Gemini;
+        g.target_lang = "zh-TW".into();
+        assert_eq!(g.target_code(), "zh-Hant");
+        let cfg = &g.session_update()["setup"]["generationConfig"];
+        assert_eq!(cfg["translationConfig"]["targetLanguageCode"], "zh-Hant");
+        // The plain Chinese target keeps the simplified variant.
+        g.target_lang = "zh".into();
+        assert_eq!(g.session_update()["setup"]["generationConfig"]["translationConfig"]["targetLanguageCode"], "zh-Hans");
     }
 
     #[test]

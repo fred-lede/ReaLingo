@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { deleteGlossary, upsertGlossary, type GlossaryEntry } from "../../core/glossary";
+import { deleteGlossary, targetLangMatches, upsertGlossary, type GlossaryEntry } from "../../core/glossary";
 import { locale, t, type Key } from "../../core/i18n";
 import { LANGUAGES } from "../../core/languages";
 import { s2t, tw } from "../../core/s2t";
@@ -26,7 +26,7 @@ const languageOptions = computed(() => [
     keywords: `${language.zh} ${s2t(language.zh)} ${language.en}`,
   })),
 ]);
-const activeCount = computed(() => settings.glossary.filter((entry) => entry.targetLang === "*" || entry.targetLang === settings.targetLang).length);
+const activeCount = computed(() => settings.glossary.filter((entry) => targetLangMatches(entry.targetLang, settings.targetLang)).length);
 const availability = computed(() => {
   if (props.mode === "local") return t("glossaryLocalHint");
   return props.protocol === "qwen35" || props.protocol === "qwen38"

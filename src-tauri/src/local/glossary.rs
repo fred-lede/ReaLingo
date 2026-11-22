@@ -39,17 +39,27 @@ fn valid_boundary(text: &str, start: usize, end: usize, needle: &str) -> bool {
 }
 
 impl GlossaryMatcher {
+    /// Whether a glossary entry's target language is this session's target. The two
+    /// Chinese script variants are the same language (they differ only in output
+    /// characters), so entries tagged for either apply to both.
+    fn entry_matches_target(entry: &GlossaryEntry, target_lang: &str) -> bool {
+        if entry.target_lang == target_lang {
+            return true;
+        }
+        matches!((entry.target_lang.as_str(), target_lang), ("zh", "zh-TW") | ("zh-TW", "zh"))
+    }
+
     pub fn new(entries: &[GlossaryEntry], target_lang: &str) -> Result<Self, String> {
         let mut patterns = Vec::new();
         let mut needles = Vec::new();
         let specific_sources: HashSet<_> = entries
             .iter()
-            .filter(|entry| entry.target_lang == target_lang)
+            .filter(|entry| Self::entry_matches_target(entry, target_lang))
             .map(|entry| entry.source.trim())
             .collect();
         for entry in entries
             .iter()
-            .filter(|entry| entry.target_lang == "*" || entry.target_lang == target_lang)
+            .filter(|entry| entry.target_lang == "*" || Self::entry_matches_target(entry, target_lang))
         {
             if entry.target_lang == "*" && specific_sources.contains(entry.source.trim()) {
                 continue;
@@ -198,6 +208,30 @@ mod tests {
             target: target.into(),
             target_lang: language.into(),
         }
+    }
+
+    #[test]
+    fn chinese_glossary_entries_apply_to_both_script_variants() {
+        // An entry tagged for Simplified Chinese ("zh") must still fire when the session
+        // target is Traditional ("zh-TW") and vice versa — they are the same language,
+        // only the output script differs.
+        let simplified = GlossaryMatcher::new(
+            &[term("LoRA", &[], "低秩适配", "zh")],
+            "zh-TW",
+        )
+        .unwrap();
+        assert_eq!(simplified.apply("LoRA, not Flora").hints, vec![("LoRA".into(), "低秩适配".into())]);
+
+        let traditional = GlossaryMatcher::new(
+            &[term("LoRA", &[], "低秩适配", "zh-TW")],
+            "zh",
+        )
+        .unwrap();
+        assert_eq!(traditional.apply("LoRA, not Flora").hints, vec![("LoRA".into(), "低秩适配".into())]);
+
+        // A different language never matches, even the untagged wildcard stays language-aware.
+        let english = GlossaryMatcher::new(&[term("LoRA", &[], "low-rank", "en")], "zh-TW").unwrap();
+        assert!(english.apply("LoRA, not Flora").hints.is_empty());
     }
 
     #[test]

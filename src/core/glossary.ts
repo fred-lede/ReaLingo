@@ -5,6 +5,17 @@ export interface GlossaryEntry {
   targetLang: string;
 }
 
+/**
+ * Whether a glossary entry's target language is the session's target. The two Chinese
+ * script variants are one language (only the output characters differ), so entries
+ * tagged for either apply to both; "*" (untagged) applies everywhere. Mirrors the
+ * matcher on the Rust side so the editor's active count stays honest.
+ */
+export function targetLangMatches(entryLang: string, targetLang: string): boolean {
+  if (entryLang === "*" || entryLang === targetLang) return true;
+  return (entryLang === "zh" || entryLang === "zh-TW") && (targetLang === "zh" || targetLang === "zh-TW");
+}
+
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }

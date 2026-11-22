@@ -1,9 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deleteGlossary, migrateGlossary, upsertGlossary } from '../src/core/glossary.ts';
+import { deleteGlossary, migrateGlossary, targetLangMatches, upsertGlossary } from '../src/core/glossary.ts';
 
 const codes = new Set(['zh', 'en']);
 const lora = { source: 'LoRA', aliases: ['Loari'], target: '低秩适配', targetLang: 'zh' };
+
+test('the two Chinese script variants match each other as glossary targets', () => {
+  assert.ok(targetLangMatches('zh', 'zh-TW'));
+  assert.ok(targetLangMatches('zh-TW', 'zh'));
+  assert.ok(targetLangMatches('zh', 'zh'));
+  assert.ok(targetLangMatches('zh-TW', 'zh-TW'));
+  // The untagged wildcard and every other language do not cross-match.
+  assert.ok(targetLangMatches('*', 'zh-TW'));
+  assert.ok(!targetLangMatches('en', 'zh-TW'));
+  assert.ok(!targetLangMatches('zh-TW', 'en'));
+});
 
 test('old Qwen pairs migrate once and malformed saved data cannot crash startup', () => {
   assert.deepEqual(migrateGlossary({ hotwords: { LoRA: '低秩适配' } }), [

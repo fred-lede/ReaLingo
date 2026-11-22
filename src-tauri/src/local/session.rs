@@ -38,6 +38,24 @@ const FAST_TRANSLATION_WAIT: Duration = Duration::from_secs(2);
 const COMPLETE_TRANSLATION_WAIT: Duration = Duration::from_secs(4);
 const MAX_GROUP_PARTS: usize = 3;
 
+/// The language code the ASR engine is forced to hear. The script split only exists on
+/// the target side: Whisper and SenseVoice know one Chinese, so a Traditional source
+/// (selectable by the swap button) is fed as the single Chinese they accept.
+fn asr_language(source_lang: &str) -> Option<&str> {
+    match source_lang {
+        "auto" => None,
+        "zh-TW" => Some("zh"),
+        other => Some(other),
+    }
+}
+
+/// Whether the translation output is Chinese. The Chinese-output guards (fallback retry,
+/// context-leak check) must fire for both script variants, since Traditional output is
+/// the same CJK range the checks already scan.
+fn target_is_chinese(target_lang: &str) -> bool {
+    matches!(target_lang, "zh" | "zh-TW")
+}
+
 fn backend_event(stage: &str, backend: BackendStatus) -> serde_json::Value {
     serde_json::json!({ "type": "local.backend", "stage": stage, "backend": backend })
 }
@@ -600,7 +618,7 @@ impl LocalSession {
         audio_queue_len: usize,
     ) -> Result<(), String> {
         group_tx.send(GroupMessage::WindowStart).map_err(|_| "Translation grouping worker stopped".to_string())?;
-        let lang = (settings.source_lang != "auto").then_some(settings.source_lang.as_str());
+        let lang = asr_language(settings.source_lang.as_str());
         let started = Instant::now();
         let clip_after_ms = (*committed_until_ms >= 0).then_some(*committed_until_ms);
         let segments = asr.transcribe_samples(&window.samples, lang, window.offset_ms, clip_after_ms)?;
@@ -694,7 +712,7 @@ impl LocalSession {
             let possible = matcher.possible_terms(&job.text, &context_text).into_iter()
                 .filter(|term| !job.hints.contains(term)).collect::<Vec<_>>();
             let started = Instant::now();
-            let result = translator.translate(&job.text, target, &context_text, settings.target_lang == "zh", &job.hints, &possible);
+            let result = translator.translate(&job.text, target, &context_text, target_is_chinese(settings.target_lang.as_str()), &job.hints, &possible);
             let backend = translator.backend_status();
             if backend != BackendStatus::Detecting && backend != last_reported {
                 let _ = app.emit(realtime::RAW_EVENT, backend_event("translation", backend));
@@ -725,10 +743,31 @@ impl LocalSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{backend_event, initial_backend_events, collapse_repeated_asr_segments, committable, hop_for_queue, trim_repeated_prefix, PendingGroup, SpeechSegmenter, SubtitleSegment, HOP, RATE};
+    use super::{backend_event, initial_backend_events, collapse_repeated_asr_segments, committable, hop_for_queue, trim_repeated_prefix, asr_language, target_is_chinese, PendingGroup, SpeechSegmenter, SubtitleSegment, HOP, RATE};
     use crate::{config::{GlossaryEntry, TranslationPace}, local::glossary::GlossaryMatcher};
     use crate::local::backend_status::BackendStatus;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_asr_engine_is_fed_one_chinese_language() {
+        // The script split is a target-side concept: Whisper/SenseVoice know one Chinese.
+        // The picker may hand zh-TW over as a source (the swap button does), and the
+        // engines must not see a code they reject.
+        assert_eq!(asr_language("auto"), None);
+        assert_eq!(asr_language("zh-TW"), Some("zh"));
+        assert_eq!(asr_language("zh"), Some("zh"));
+        assert_eq!(asr_language("en"), Some("en"));
+    }
+
+    #[test]
+    fn the_chinese_output_guards_cover_both_script_variants() {
+        // Whether the translation output is Chinese decides the fallback retry and the
+        // context-leak guard; Traditional Chinese output needs both, and its characters
+        // are the same CJK range the checks already scan.
+        assert!(target_is_chinese("zh"));
+        assert!(target_is_chinese("zh-TW"));
+        assert!(!target_is_chinese("en"));
+    }
 
     #[test]
     fn silent_window_keeps_preroll_without_compressing_timestamps() {
