@@ -673,11 +673,11 @@ watch([lines, current], async () => {
             <p v-if="transcribingOnly" class="hint">{{ t("transcribeOnlyHint") }}</p>
 
             <!-- The engine writes Simplified Chinese; the script is picked here and mirrored in the overlay. -->
-            <div v-if="settings.mode === 'local'" class="line">
+            <div class="line">
               <span>{{ t("transcriptStyle") }}</span>
               <Picker v-model="transcriptStylePick" class="grow" :options="transcriptStyleOptions" />
             </div>
-            <p v-if="settings.mode === 'local'" class="hint">{{ t("transcriptStyleHint") }}</p>
+            <p class="hint">{{ t("transcriptStyleHint") }}</p>
 
             <label v-if="!transcribingOnly" class="line">
               <span>{{ t("speak") }}</span>

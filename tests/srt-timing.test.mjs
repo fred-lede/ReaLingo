@@ -149,3 +149,27 @@ test('a translated row is one cue with source then target', () => {
   const [cue] = assertWellFormed(file);
   assert.equal(cue.text, '你好\nHello');
 });
+
+// The cloud API times each utterance with its own VAD; the translation lands after the
+// speech ends, and that must not move the cue.
+test('translation mode cues follow the audio span, not when the translation arrived', () => {
+  const file = stream.exportSrt([
+    { id: 1, source: '看外语视频', target: 'Watching foreign-language videos', at: 4200, start: 1200, end: 3400 },
+    { id: 2, source: '字幕同步越好', target: 'the better the subtitles line up', at: 7800, start: 3400, end: 5200 },
+    { id: 3, source: '听力进步更快', target: 'listening improves faster', at: 11000, start: 6100, end: 7600 },
+  ]);
+  const list = assertWellFormed(file);
+  assert.deepEqual(list.map((c) => [c.start, c.end]), [[1200, 3400], [3400, 5200], [6100, 7600]]);
+  assert.equal(list[0].text, '看外语视频\nWatching foreign-language videos');
+});
+
+// A turn the server only opened (start, no end) still gets a duration, and the next cue
+// keeps its own start.
+test('a cue whose end the server never reported is filled, not left at zero length', () => {
+  const file = stream.exportSrt([
+    { id: 1, source: 'A', target: 'X', at: 1000, start: 1000, end: null },
+    { id: 2, source: 'B', target: 'Y', at: 3000, start: 3000, end: 5000 },
+  ]);
+  const list = assertWellFormed(file);
+  assert.deepEqual(list.map((c) => [c.start, c.end]), [[1000, 3000], [3000, 5000]]);
+});

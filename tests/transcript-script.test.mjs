@@ -67,6 +67,17 @@ test('the overlay is told the script, not left to guess from its own stale setti
   assert.match(app, /watch\(\(\) => \[settings\.mode, settings\.transcribeOnly, settings\.transcriptStyle, locale\.value\], pushOverlayStyle\)/);
 });
 
+// Cloud ASR writes Simplified too, so the choice matters outside local mode as well.
+test('the script control is offered in every mode, and the hint says exports follow it', () => {
+  const app = read('../src/desktop/App.vue');
+  assert.match(app, /<div class="line">\s*<span>\{\{ t\("transcriptStyle"\) \}\}<\/span>/);
+  assert.doesNotMatch(app, /v-if="settings\.mode === 'local'" class="line">\s*<span>\{\{ t\("transcriptStyle"\)/);
+  const i18n = read('../src/core/i18n.ts');
+  for (const hint of i18n.match(/\n  transcriptStyleHint: "[^"]+"/g) ?? []) {
+    assert.match(hint, /导出|匯出|exports/, `hint still claims exports keep the engine's script: ${hint}`);
+  }
+});
+
 test('every UI dictionary names the control and its three choices', () => {
   const i18n = read('../src/core/i18n.ts');
   for (const key of ['transcriptStyle', 'transcriptStyleHint', 'styleSystem', 'styleSimplified', 'styleTraditional']) {
