@@ -650,7 +650,6 @@ watch([lines, current], async () => {
                 <Picker v-else v-model="settings.sourceLang" :options="sourceLangOptions" :disabled="isRunning()" />
               </div>
               <button
-              <button
                 v-if="!transcribingOnly && sourceMode !== 'detected'"
                 class="btn-icon swap"
                 :aria-label="t('swap')"
