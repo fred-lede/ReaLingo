@@ -223,6 +223,18 @@ export async function initSettings(persist = true) {
     // keeps that explicit choice rather than falling back to "follow system".
     const legacy = localStorage.getItem("locale");
     if (!saved.uiLang && (legacy === "zh" || legacy === "en")) settings.uiLang = legacy;
+    // Before Traditional Chinese existed the toggle only wrote "zh"/"en" and every Chinese
+    // system rendered Simplified — a saved "zh" meant "Chinese", not "Simplified". On a
+    // zh-Hant system re-read it as "follow system" once, so an existing install opens in
+    // Traditional; the marker keeps a later, deliberate 简体 pick from being undone.
+    if (
+      settings.uiLang === "zh" &&
+      /-(TW|HK|MO)|Hant/i.test(navigator.language) &&
+      !localStorage.getItem("ui-lang-hant")
+    ) {
+      settings.uiLang = "system";
+      localStorage.setItem("ui-lang-hant", "1");
+    }
     // Before the two rows were sized separately, the bar had one `fontSize` and the source
     // line was 0.62em of it. Carry that pair over so an existing install looks unchanged.
     const oldSub = saved.sub as (Partial<SubtitleStyle> & { fontSize?: number }) | undefined;

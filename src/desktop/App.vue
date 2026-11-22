@@ -12,8 +12,9 @@ import Picker from "./components/Picker.vue";
 import Slider from "./components/Slider.vue";
 import Settings from "./components/Settings.vue";
 import About from "./components/About.vue";
+import LocaleMenu from "./components/LocaleMenu.vue";
 import History from "../shared/History.vue";
-import { locale, setLocale, t } from "../core/i18n";
+import { locale, t } from "../core/i18n";
 import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
 import { tw } from "../core/s2t";
 import { check, checkUpdateAtStartup, openHome } from "../core/update";
@@ -468,14 +469,8 @@ watch([lines, current], async () => {
 
       <div class="spacer" data-tauri-drag-region />
 
-      <!-- Names the language a click switches to, like any language switcher. -->
-      <button
-        class="btn-icon locale"
-        :aria-label="locale.startsWith('zh') ? 'Switch to English' : '切换到中文'"
-        @click="setLocale(locale.startsWith('zh') ? 'en' : 'zh')"
-      >
-        {{ locale.startsWith("zh") ? "EN" : "中" }}
-      </button>
+      <!-- Follow system (zh-Hant / zh-CN variants) or pick a language outright. -->
+      <LocaleMenu />
       <button class="btn-icon" :aria-label="t('theme')" @click="cycleTheme">
         <svg v-if="isDark" width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M13.4 9.6A5.8 5.8 0 0 1 6.4 2.6a5.8 5.8 0 1 0 7 7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
@@ -893,7 +888,6 @@ watch([lines, current], async () => {
 .pill.error .dot { background: var(--danger); }
 @keyframes blink { 50% { opacity: 0.25; } }
 
-.locale { font-size: 12px; font-weight: 700; }
 .btn-icon.active { background: var(--shade); color: var(--accent); }
 .btn-icon.danger:hover { background: var(--danger); color: #fff; }
 .win-buttons { display: flex; gap: 2px; margin-left: 6px; }

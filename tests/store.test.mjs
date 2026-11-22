@@ -11,7 +11,11 @@ globalThis.__settingsTest = {
   load: async () => ({ get: async () => saved, set: async (_key, value) => persisted.push(value) }),
   invoke: async (cmd) => cmd === 'platform' ? { keyring: secure } : '',
 };
-globalThis.localStorage = { getItem: () => null };
+globalThis.localStorage = {
+  __m: new Map(),
+  getItem: (k) => globalThis.localStorage.__m.get(k) ?? null,
+  setItem: (k, v) => globalThis.localStorage.__m.set(k, v),
+};
 globalThis.document = { documentElement: { dataset: {} } };
 globalThis.window = { matchMedia: () => ({ matches: false, addEventListener: () => {} }), setTimeout, clearTimeout };
 registerHooks({
@@ -106,6 +110,43 @@ test('where a credential store exists persisted settings never contain API keys'
   await nextTick();
   assert.equal(persisted.at(-1).apiKey, '');
   assert.equal(store.activeKey(), 'must-not-persist');
+});
+
+test('a legacy zh choice on a zh-Hant system re-reads as follow system, and later explicit picks stick', async () => {
+  const nav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const setLang = (language) => Object.defineProperty(globalThis, 'navigator', { value: { language }, configurable: true });
+  try {
+    // Before Traditional Chinese existed the toggle only wrote "zh"/"en" and every Chinese
+    // system rendered Simplified, so a saved "zh" meant "Chinese", not "Simplified".
+    globalThis.localStorage.__m.delete('ui-lang-hant');
+    setLang('zh-TW');
+    saved = { uiLang: 'zh' };
+    let store = await fresh();
+    await store.initSettings(false);
+    assert.equal(store.settings.uiLang, 'system');
+
+    // The one-shot marker keeps a deliberate 简体 pick made afterwards from being undone.
+    saved = { uiLang: 'zh' };
+    store = await fresh();
+    await store.initSettings(false);
+    assert.equal(store.settings.uiLang, 'zh');
+  } finally {
+    if (nav) Object.defineProperty(globalThis, 'navigator', nav);
+  }
+});
+
+test('a zh-CN install keeps its explicit Simplified choice', async () => {
+  const nav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  try {
+    globalThis.localStorage.__m.delete('ui-lang-hant');
+    Object.defineProperty(globalThis, 'navigator', { value: { language: 'zh-CN' }, configurable: true });
+    saved = { uiLang: 'zh' };
+    const store = await fresh();
+    await store.initSettings(false);
+    assert.equal(store.settings.uiLang, 'zh');
+  } finally {
+    if (nav) Object.defineProperty(globalThis, 'navigator', nav);
+  }
 });
 
 test('system output remains the default and old or specific device preferences are preserved', async () => {
