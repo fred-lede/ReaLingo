@@ -444,15 +444,16 @@ export function exportTxt(rows: Line[] = lines.value): string {
 /**
  * SRT timings are the line's place in the input audio — exact where the server reports it,
  * otherwise when its text arrived on the audio's clock (late by the model's latency). History
- * written before that was recorded falls back to wall-clock arrival, counted from the first line.
+ * written before that was recorded falls back to wall-clock arrival, counted from the earliest line.
  */
 export function exportSrt(rows: Line[] = lines.value): string {
   const timed = rows.length > 0 && rows.every((l) => l.start != null);
-  const t0 = rows[0]?.at ?? Date.now();
+  // Counting from the first row would put an earlier row in the negative.
+  const t0 = rows.reduce((earliest, l) => Math.min(earliest, l.at), Number.MAX_SAFE_INTEGER);
   const startOf = (l: Line) => (timed ? l.start! : l.at - t0);
   // Rows sit in the order their turns opened, which is not always audio order (a row on the
   // fallback clock beside one the server timed), and cues must run in time order.
-  const cues = timed ? [...rows].sort((a, b) => a.start! - b.start!) : rows;
+  const cues = [...rows].sort((a, b) => startOf(a) - startOf(b));
   return cues
     .map((l, i) => {
       const start = startOf(l);
@@ -460,7 +461,9 @@ export function exportSrt(rows: Line[] = lines.value): string {
       // At least a glance on screen, but never past the next line's start: that wins.
       const wanted = Math.max(start + 1000, timed && l.end != null ? l.end : (next ?? start + 3000));
       const end = next != null ? Math.max(start + 1, Math.min(wanted, next)) : wanted;
-      const body = l.source ? `${asShown(l.source)}\n${l.target}` : l.target;
+      // A transcription-only row must not leave an empty second line: that is a blank line
+      // inside the cue, and strict parsers read it as a cue boundary.
+      const body = [asShown(l.source), l.target].filter(Boolean).join("\n");
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${body}\n`;
     })
     .join("\n");
