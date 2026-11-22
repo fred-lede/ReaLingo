@@ -25,6 +25,7 @@ import { activeKey, settings, initSettings, resolvedTheme, SUB_SIZE, type SubAli
 import { isInputTooQuiet } from "../core/input-level";
 import {
   current,
+  clearStream,
   detectedLang,
   errorMsg,
   saveAs,
@@ -33,6 +34,7 @@ import {
   lines,
   localDiagnostics,
   rawLog,
+  sessionLines,
   speaking,
   start,
   status,
@@ -419,7 +421,7 @@ void listen<string>("tray://action", ({ payload: id }) => {
 watch([locale, status, () => settings.sub, transcribingOnly], syncTray, { deep: true });
 
 /* ---------- export ---------- */
-const exportAs = (kind: "txt" | "srt") => saveAs(kind, lines.value, transcribingOnly.value ? "transcription" : "translation");
+const exportAs = (kind: "txt" | "srt") => saveAs(kind, sessionLines.value, transcribingOnly.value ? "transcription" : "translation");
 
 /* ---------- lifecycle ---------- */
 let levelTimer: number | undefined;
@@ -827,7 +829,7 @@ watch([lines, current], async () => {
             />
             <FontSize v-model:src="settings.stream.srcSize" v-model:tgt="settings.stream.tgtSize" :source-only="transcribingOnly" />
             <button class="chip" @click="showHistory = true">{{ t("history") }}</button>
-            <button class="chip" :disabled="!lines.length && !rawLog.length" @click="lines = []; rawLog = []">{{ t("clear") }}</button>
+            <button class="chip" :disabled="!lines.length && !rawLog.length" @click="clearStream()">{{ t("clear") }}</button>
             <button class="chip" :disabled="!lines.length" @click="exportAs('txt')">{{ t("exportTxt") }}</button>
             <button class="chip" :disabled="!lines.length" @click="exportAs('srt')">{{ t("exportSrt") }}</button>
           </div>

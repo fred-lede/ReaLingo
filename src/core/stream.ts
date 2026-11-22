@@ -36,6 +36,12 @@ export type Status = "idle" | "connecting" | "connected" | "stopping" | "closed"
 
 export const lines = ref<Line[]>([]);
 /**
+ * Every row of this session, including the ones the visible window has scrolled past. The
+ * screen renders `lines` (the last 500); an export writes this, so a file is never a truncated
+ * middle of what the user heard.
+ */
+export const sessionLines = ref<Line[]>([]);
+/**
  * The sentence currently in flight. `*Stash` holds the model's unconfirmed tail — the
  * server re-sends the full confirmed text plus a tentative continuation on every frame,
  * so these are assignments, never concatenations.
@@ -73,6 +79,10 @@ export async function pollHealth() {
   if (!isRunning()) { flush(); speaking.value = false; }
 }
 let nextId = 1;
+/** Row by id: a turn patches its own row even after the visible window has dropped it. */
+const rowsById = new Map<number, Line>();
+/** Rows the stream panel renders. The export is not bound by it. */
+const VISIBLE_ROWS = 500;
 
 /**
  * The history file this run is appending to, "" when history is off. Written as JSONL: one
@@ -187,11 +197,16 @@ function publish(t: Turn) {
   if (!t.source && !t.target) return;
   if (t.lineId === undefined) {
     t.lineId = nextId++;
-    lines.value.push({ id: t.lineId, source: t.source, target: t.target, at: t.at, ...rowSpan(t), parts: [...t.parts] });
-    if (lines.value.length > 500) lines.value.splice(0, lines.value.length - 500);
+    const row: Line = { id: t.lineId, source: t.source, target: t.target, at: t.at, ...rowSpan(t), parts: [...t.parts] };
+    rowsById.set(t.lineId, row);
+    sessionLines.value.push(row);
+    lines.value.push(row);
+    if (lines.value.length > VISIBLE_ROWS) lines.value.splice(0, lines.value.length - VISIBLE_ROWS);
     return;
   }
-  const row = lines.value.find((l) => l.id === t.lineId);
+  // Looked up by id, not in `lines`: the window is only the tail of the session, and a turn
+  // whose row has scrolled out still has to be finished.
+  const row = rowsById.get(t.lineId);
   if (row) {
     row.source = t.source;
     row.target = t.target;
@@ -369,6 +384,14 @@ const rawReady = listen("rt://raw", ({ payload }) => {
 
 export type Source = { kind: "device"; id: string; record?: boolean; format?: "wav" | "mp3" } | { kind: "file"; path: string };
 
+/** Clears the panel and the export together: what is gone from the screen is gone from the file. */
+export function clearStream() {
+  lines.value = [];
+  sessionLines.value = [];
+  rowsById.clear();
+  rawLog.value = [];
+}
+
 /** `speak` is decided by the caller: whether the setting may take effect for this source. */
 export async function start(source: Source, speak: boolean) {
   runGeneration++;
@@ -376,6 +399,8 @@ export async function start(source: Source, speak: boolean) {
   errorMsg.value = "";
   warnMsg.value = "";
   lines.value = [];
+  sessionLines.value = [];
+  rowsById.clear();
   detectedLang.value = "";
   resetTurns();
   rawLog.value = [];
@@ -450,7 +475,7 @@ function shownLines(line: Line): string[] {
   return [source, line.target].filter(Boolean);
 }
 
-export function exportTxt(rows: Line[] = lines.value): string {
+export function exportTxt(rows: Line[] = sessionLines.value): string {
   return rows.map((l) => shownLines(l).join("\n")).filter(Boolean).join("\n\n");
 }
 
@@ -459,7 +484,7 @@ export function exportTxt(rows: Line[] = lines.value): string {
  * otherwise when its text arrived on the audio's clock (late by the model's latency). History
  * written before that was recorded falls back to wall-clock arrival, counted from the earliest line.
  */
-export function exportSrt(rows: Line[] = lines.value): string {
+export function exportSrt(rows: Line[] = sessionLines.value): string {
   // A line the mode hides contributes no cue at all, so the numbering stays dense.
   const shown = rows.filter((l) => shownLines(l).length);
   const timed = shown.length > 0 && shown.every((l) => l.start != null);

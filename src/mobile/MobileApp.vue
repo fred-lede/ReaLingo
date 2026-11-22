@@ -27,7 +27,7 @@ import { PRESETS, PROTOCOLS, langName, modelName } from "../core/languages";
 import { locale, t, tf } from "../core/i18n";
 import { convertTranscript } from "../core/convert";
 import { checkUpdateAtStartup } from "../core/update";
-import { isRunning, lines, current, status, errorMsg, warnMsg, fileProgress, saveAs, pollHealth, detectedLang } from "../core/stream";
+import { isRunning, lines, sessionLines, clearStream, current, status, errorMsg, warnMsg, fileProgress, saveAs, pollHealth, detectedLang } from "../core/stream";
 import { perms, droid, refreshPerms, askMic, openAppSettings, openNotificationSettings, openBatterySettings, pendingList, setKeepScreenOn, pickAudio } from "./perms";
 import { toast } from "./toasts";
 import { VENDOR_LOGO } from "../shared/vendorLogos";
@@ -165,7 +165,7 @@ async function doStart() {
 watch(running, (run, old) => { if (old && !run) stopCapture(); });
 
 async function exportRows(kind: "txt" | "srt") {
-  try { await saveAs(kind, lines.value); } catch (e) { toast(String(e)); }
+  try { await saveAs(kind, sessionLines.value); } catch (e) { toast(String(e)); }
 }
 async function stop() {
   stopCapture();
@@ -345,7 +345,7 @@ async function askFromCenter() {
         <template v-if="lines.length">
           <button class="exp" @click="exportRows('txt')">TXT</button>
           <button class="exp" @click="exportRows('srt')">SRT</button>
-          <button class="exp" :aria-label="t('clear')" @click="lines = []">
+          <button class="exp" :aria-label="t('clear')" @click="clearStream()">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4 4.5l.7 8.6a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.6"/></svg>
           </button>
         </template>
