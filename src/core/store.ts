@@ -12,7 +12,7 @@ export const REGION_ID: Record<Region, string> = { beijing: "cn-beijing", singap
 export type Theme = "system" | "light" | "dark";
 /** Which language the UI text is drawn in; "system" follows `navigator.language`.
  *  Affects interface strings only, never what gets translated. */
-export type UiLang = "system" | "zh" | "en";
+export type UiLang = "system" | "zh" | "zh-TW" | "en";
 export type SubMode = "both" | "target" | "source";
 export type SubAlign = "left" | "center" | "right";
 

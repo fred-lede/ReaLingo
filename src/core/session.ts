@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { activeKey, settings } from "./store";
 import { canSpeak, langName, languageCodes, PROTOCOLS, VOICE_LISTS, voiceLabel } from "./languages";
 import { locale } from "./i18n";
+import { tw } from "./s2t";
 import { caps } from "./platform";
 import { current, detectedLang, errorMsg, fileProgress, isRunning, lines, rawLog, speaking, start, status, stop, warnMsg } from "./stream";
 
@@ -70,7 +71,7 @@ export function useSession(rememberSource = true) {
       value: c,
       label: langName(c, locale.value),
       note: c,
-      keywords: `${langName(c, "zh")} ${langName(c, "en")}`,
+      keywords: `${langName(c, "zh")} ${langName(c, "zh-TW")} ${langName(c, "en")}`,
     }))
   );
   /** Volcengine wants Chinese or English on one side of every pair (PROTOCOLS `hub`). */
@@ -106,7 +107,7 @@ export function useSession(rememberSource = true) {
     VOICE_LISTS[voiceList.value ?? "qwen"].map((v) => ({
       value: v.id,
       label: voiceLabel(v, locale.value),
-      note: locale.value === "zh" ? v.descZh : v.descEn,
+      note: locale.value === "en" ? v.descEn : tw(v.descZh, locale.value),
       keywords: `${v.zh} ${v.descZh} ${v.descEn}`,
     }))
   );

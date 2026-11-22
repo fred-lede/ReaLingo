@@ -486,7 +486,7 @@ async function askFromCenter() {
             </div>
             <button class="m-row" @click="drawer = 'uilang'">
               <span class="m-tx"><b>{{ t("uiLang") }}</b></span>
-              <span class="m-val">{{ settings.uiLang === "system" ? t("uiSystem") : settings.uiLang === "zh" ? "简体中文" : "English" }}</span>
+              <span class="m-val">{{ settings.uiLang === "system" ? t("uiSystem") : settings.uiLang === "zh" ? "简体中文" : settings.uiLang === "zh-TW" ? "繁體中文" : "English" }}</span>
               <svg class="m-chev" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 4 4 4-4 4"/></svg>
             </button>
           </div>

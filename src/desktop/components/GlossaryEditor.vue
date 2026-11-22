@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { deleteGlossary, upsertGlossary, type GlossaryEntry } from "../../core/glossary";
 import { locale, t, type Key } from "../../core/i18n";
 import { LANGUAGES } from "../../core/languages";
+import { s2t, tw } from "../../core/s2t";
 import { settings, type ExecutionMode, type Protocol } from "../../core/store";
 import Picker from "./Picker.vue";
 
@@ -20,9 +21,9 @@ const languageOptions = computed(() => [
     : []),
   ...LANGUAGES.map((language) => ({
     value: language.code,
-    label: locale.value === "zh" ? language.zh : language.en,
+    label: locale.value === "en" ? language.en : tw(language.zh, locale.value),
     note: language.code,
-    keywords: `${language.zh} ${language.en}`,
+    keywords: `${language.zh} ${s2t(language.zh)} ${language.en}`,
   })),
 ]);
 const activeCount = computed(() => settings.glossary.filter((entry) => entry.targetLang === "*" || entry.targetLang === settings.targetLang).length);
@@ -81,7 +82,7 @@ function remove(index: number) {
 function targetLabel(code: string): string {
   if (code === "*") return t("glossaryAllTargets");
   const language = LANGUAGES.find((item) => item.code === code);
-  return language ? (locale.value === "zh" ? language.zh : language.en) : code;
+  return language ? (locale.value === "en" ? language.en : tw(language.zh, locale.value)) : code;
 }
 </script>
 

@@ -1,4 +1,5 @@
 import type { Protocol } from "./store";
+import { tw } from "./s2t";
 
 // Languages supported by qwen3.5-livetranslate-flash-realtime.
 // `tts: true` = the model can also speak this language (the "read aloud" switch).
@@ -264,13 +265,14 @@ export type VoiceList = "qwen" | "volc";
 export const VOICE_LISTS: Record<VoiceList, Voice[]> = { qwen: VOICES, volc: VOLC_VOICES };
 
 /** A voice as the picker shows it: its own label if it has one, else the name it is called by. */
-export function voiceLabel(v: Voice, locale: "zh" | "en"): string {
-  if (v.label) return v.label[locale];
-  return locale === "zh" ? `${v.id} · ${v.zh}` : v.id;
+export function voiceLabel(v: Voice, locale: "zh" | "zh-TW" | "en"): string {
+  if (v.label) return locale === "en" ? v.label.en : tw(v.label.zh, locale);
+  return locale === "en" ? v.id : `${v.id} · ${tw(v.zh, locale)}`;
 }
 
-export function langName(code: string, locale: "zh" | "en"): string {
-  if (code === "auto") return locale === "zh" ? "自动检测" : "Auto detect";
+export function langName(code: string, locale: "zh" | "zh-TW" | "en"): string {
+  if (code === "auto") return locale === "en" ? "Auto detect" : locale === "zh-TW" ? "自動偵測" : "自动检测";
   const l = BY_CODE.get(code);
-  return l ? l[locale] : code;
+  if (!l) return code;
+  return locale === "en" ? l.en : tw(l.zh, locale);
 }

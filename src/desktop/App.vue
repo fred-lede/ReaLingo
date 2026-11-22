@@ -15,6 +15,7 @@ import About from "./components/About.vue";
 import History from "../shared/History.vue";
 import { locale, setLocale, t } from "../core/i18n";
 import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
+import { tw } from "../core/s2t";
 import { check, checkUpdateAtStartup, openHome } from "../core/update";
 import type { BackendStatus } from "../core/local-diagnostics";
 import { localBackendsReady } from "../core/local-diagnostics";
@@ -197,7 +198,7 @@ const voiceOptions = computed(() =>
   VOICE_LISTS[voiceList.value ?? "qwen"].map((v) => ({
     value: v.id,
     label: voiceLabel(v, locale.value),
-    note: locale.value === "zh" ? v.descZh : v.descEn,
+    note: locale.value === "en" ? v.descEn : tw(v.descZh, locale.value),
     keywords: `${v.zh} ${v.descZh} ${v.descEn}`,
   }))
 );
@@ -310,7 +311,7 @@ const langOptions = computed(() =>
     value: c,
     label: langName(c, locale.value),
     note: c,
-    keywords: `${langName(c, "zh")} ${langName(c, "en")}`,
+    keywords: `${langName(c, "zh")} ${langName(c, "zh-TW")} ${langName(c, "en")}`,
   }))
 );
 /** Volcengine wants Chinese or English on one side of every pair (PROTOCOLS `hub`). */
@@ -470,10 +471,10 @@ watch([lines, current], async () => {
       <!-- Names the language a click switches to, like any language switcher. -->
       <button
         class="btn-icon locale"
-        :aria-label="locale === 'zh' ? 'Switch to English' : '切换到中文'"
-        @click="setLocale(locale === 'zh' ? 'en' : 'zh')"
+        :aria-label="locale.startsWith('zh') ? 'Switch to English' : '切换到中文'"
+        @click="setLocale(locale.startsWith('zh') ? 'en' : 'zh')"
       >
-        {{ locale === "zh" ? "EN" : "中" }}
+        {{ locale.startsWith("zh") ? "EN" : "中" }}
       </button>
       <button class="btn-icon" :aria-label="t('theme')" @click="cycleTheme">
         <svg v-if="isDark" width="16" height="16" viewBox="0 0 16 16" fill="none">

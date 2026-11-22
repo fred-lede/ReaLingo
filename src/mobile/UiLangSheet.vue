@@ -3,12 +3,13 @@ import { computed } from "vue";
 import Sheet from "./Sheet.vue";
 import ChoiceList from "./ChoiceList.vue";
 import { settings } from "../core/store";
-import { t, type Locale } from "../core/i18n";
+import { t, systemLocaleName, type Locale } from "../core/i18n";
 
 defineEmits<{ close: [] }>();
 
 const options = computed(() => [
-  { value: "system", label: t("uiSystem"), description: t("uiDetected").replace("{l}", navigator.language.startsWith("zh") ? "中文" : "English") },
+  { value: "system", label: t("uiSystem"), description: t("uiDetected").replace("{l}", systemLocaleName()) },
+  { value: "zh-TW", label: "繁體中文" },
   { value: "zh", label: "简体中文" },
   { value: "en", label: "English" },
 ]);

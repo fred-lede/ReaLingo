@@ -32,10 +32,12 @@ export const check = ref<{ state: CheckState; tag?: string; body?: string }>({ s
  * Within the chosen part (or the whole body, for older single-language notes) the news ends
  * at the standing sections — feature list, install steps — or at the generated changelog.
  */
-export function whatsNew(body: string, locale: "zh" | "en"): string {
+export function whatsNew(body: string, locale: "zh" | "zh-TW" | "en"): string {
+  // Release notes are authored in zh/en only; zh-TW reads the zh half.
+  const part = locale === "en" ? "en" : "zh";
   let lines = body.replace(/\r\n/g, "\n").split("\n");
   const marker = (l: string) => /^<!--\s*(zh|en)\s*-->$/.exec(l.trim())?.[1];
-  const start = lines.findIndex((l) => marker(l) === locale);
+  const start = lines.findIndex((l) => marker(l) === part);
   if (start >= 0) {
     const rest = lines.slice(start + 1);
     const next = rest.findIndex((l) => marker(l) !== undefined);

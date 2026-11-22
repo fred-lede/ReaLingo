@@ -65,7 +65,7 @@ async function open(id: string) {
 
 function when(s: SessionRow): string {
   const at = s.meta?.at;
-  return at ? new Date(at).toLocaleString(locale.value === "zh" ? "zh-CN" : "en-GB") : s.id;
+  return at ? new Date(at).toLocaleString(locale.value === "en" ? "en-GB" : locale.value === "zh-TW" ? "zh-TW" : "zh-CN") : s.id;
 }
 
 function pair(s: SessionRow): string {
