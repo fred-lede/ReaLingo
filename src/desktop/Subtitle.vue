@@ -12,10 +12,14 @@ import {
 } from "@tauri-apps/api/window";
 import { initSettings, settings, type SubtitleStyle } from "../core/store";
 import { current, lines } from "../core/stream";
-import { t } from "../core/i18n";
+import { locale, t } from "../core/i18n";
+import { convertTranscript, type TranscriptStyle } from "../core/convert";
 
 const style = ref<SubtitleStyle>(settings.sub);
 const transcribingOnly = ref(false);
+/** The main window owns the transcript script; this mirror keeps the overlay in step. */
+const transcriptStyle = ref<TranscriptStyle>(settings.transcriptStyle);
+const uiLocale = ref<string>(locale.value);
 const barEl = ref<HTMLElement | null>(null);
 
 onMounted(async () => {
@@ -25,6 +29,8 @@ onMounted(async () => {
   await initSettings(false);
   style.value = settings.sub;
   transcribingOnly.value = settings.mode === "local" && settings.transcribeOnly;
+  transcriptStyle.value = settings.transcriptStyle;
+  uiLocale.value = locale.value;
   await restoreRect();
   const w = getCurrentWindow();
   void w.onMoved(saveRect);
@@ -131,9 +137,11 @@ function tail() {
   });
 }
 
-void listen<SubtitleStyle & { transcribeOnly?: boolean }>("sub://style", ({ payload }) => {
+void listen<SubtitleStyle & { transcribeOnly?: boolean; transcriptStyle?: TranscriptStyle; uiLocale?: string }>("sub://style", ({ payload }) => {
   style.value = payload;
   transcribingOnly.value = !!payload.transcribeOnly;
+  transcriptStyle.value = payload.transcriptStyle ?? transcriptStyle.value;
+  uiLocale.value = payload.uiLocale ?? uiLocale.value;
 });
 
 /**
@@ -181,9 +189,9 @@ async function openMenu() {
 
 const last = computed(() => lines.value[lines.value.length - 1]);
 const live = computed(() => !!(current.source || current.target || current.sourceStash || current.targetStash));
-const src = computed(() => (live.value ? current.source : last.value?.source ?? ""));
+const src = computed(() => convertTranscript(live.value ? current.source : last.value?.source ?? "", transcriptStyle.value, uiLocale.value));
 const tgt = computed(() => (live.value ? current.target : last.value?.target ?? ""));
-const srcStash = computed(() => (live.value ? current.sourceStash : ""));
+const srcStash = computed(() => convertTranscript(live.value ? current.sourceStash : "", transcriptStyle.value, uiLocale.value));
 const tgtStash = computed(() => (live.value ? current.targetStash : ""));
 
 // The height observer only sees the plate grow downwards; a line growing sideways has to

@@ -2,7 +2,8 @@
 import { computed } from "vue";
 import { current, isRunning, session } from "../core/session";
 import { settings } from "../core/store";
-import { t } from "../core/i18n";
+import { locale, t } from "../core/i18n";
+import { convertTranscript } from "../core/convert";
 
 /** Whether the live sentence has anything on either side of the pair. */
 const hasLive = computed(() => !!(current.source || current.sourceStash || current.target || current.targetStash));
@@ -18,7 +19,7 @@ const hasLive = computed(() => !!(current.source || current.sourceStash || curre
   >
     <template v-if="hasLive">
       <p v-if="current.source || current.sourceStash" class="src">
-        {{ current.source }}<span class="stash">{{ current.sourceStash }}</span>
+        {{ convertTranscript(current.source, settings.transcriptStyle, locale) }}<span class="stash">{{ convertTranscript(current.sourceStash, settings.transcriptStyle, locale) }}</span>
       </p>
       <p class="tgt">
         {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />

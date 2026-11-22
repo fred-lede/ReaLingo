@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 import { settings } from "../core/store";
+import { convertTranscript } from "../core/convert";
 import type { Line } from "../core/stream";
 import { current } from "../core/session";
-import { t } from "../core/i18n";
+import { locale, t } from "../core/i18n";
 
 /** `live=false` hands the in-list live sentence to LiveCard (normal mode); face/big keep it. */
 const props = withDefaults(defineProps<{ lines: Line[]; empty?: string; big?: boolean; live?: boolean }>(), { live: true });
@@ -38,13 +39,13 @@ watch([() => current.target, () => current.targetStash, () => props.lines.length
     <p v-if="!lines.length && !current.target && !current.source" class="empty">{{ empty }}</p>
 
     <article v-for="l in lines" :key="l.id" class="line-item">
-      <p v-if="l.source" class="src">{{ l.source }}</p>
+      <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
       <p class="tgt">{{ l.target }}</p>
     </article>
 
     <article v-if="live && (current.source || current.target || current.sourceStash || current.targetStash)" class="line-item live">
       <p v-if="current.source || current.sourceStash" class="src">
-        {{ current.source }}<span class="stash">{{ current.sourceStash }}</span>
+        {{ convertTranscript(current.source, settings.transcriptStyle, locale) }}<span class="stash">{{ convertTranscript(current.sourceStash, settings.transcriptStyle, locale) }}</span>
       </p>
       <p class="tgt">
         {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />

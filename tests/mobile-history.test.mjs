@@ -12,6 +12,7 @@ test('mobile history loads, searches, exports and confirms deletion of the selec
   const history = vueScript(new URL('../src/shared/History.vue', import.meta.url), {
     ref, computed, onMounted: () => {}, defineProps: () => ({ mobile: true }), defineEmits: () => {},
     settings: { history: true }, caps: ref({}), locale: ref('en'), t: key => key, langName: key => key,
+    convertTranscript: (text) => text,
     invoke: async (cmd, args) => {
       calls.push([cmd, args]);
       if (cmd === 'history_list') return [...sessions];
@@ -20,7 +21,7 @@ test('mobile history loads, searches, exports and confirms deletion of the selec
       if (cmd === 'history_clear') sessions.length = 0;
     },
     saveAs: async (...args) => exports.push(args),
-  }, ['load', 'open', 'q', 'shown', 'saveRows', 'remove', 'clearAll', 'openId', 'sessions', 'props', 'err', 'settings', 't', 'when', 'pair', 'armed']);
+  }, ['load', 'open', 'q', 'shown', 'saveRows', 'remove', 'clearAll', 'openId', 'sessions', 'props', 'err', 'settings', 't', 'when', 'pair', 'armed', 'convertTranscript']);
   await history.load();
   assert.equal(history.openId.value, 'old');
   await history.open('new');

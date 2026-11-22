@@ -5,6 +5,7 @@ import { langName } from "../core/languages";
 import { locale, t } from "../core/i18n";
 import { saveAs, type Line } from "../core/stream";
 import { settings } from "../core/store";
+import { convertTranscript } from "../core/convert";
 import { caps } from "../core/platform";
 import Sheet from "./Sheet.vue";
 
@@ -146,7 +147,7 @@ async function remove(id: string) {
       <div class="mobile-rows">
         <p v-if="!shown.length" class="mobile-no-rows">{{ t("historyPick") }}</p>
         <article v-for="l in shown" :key="l.id" class="history-row">
-          <p v-if="l.source" class="src">{{ l.source }}</p>
+          <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
           <p class="tgt">{{ l.target }}</p>
         </article>
       </div>
@@ -190,7 +191,7 @@ async function remove(id: string) {
         <div class="rows">
           <p v-if="!shown.length" class="blank">{{ t("historyPick") }}</p>
           <article v-for="l in shown" :key="l.id">
-            <p v-if="l.source" class="src">{{ l.source }}</p>
+            <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
             <p v-if="l.target" class="tgt">{{ l.target }}</p>
           </article>
         </div>

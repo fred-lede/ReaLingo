@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { MODEL_QWEN3_8, PRESETS, PROTOCOLS, type Vendor, type VoiceList } from "./languages";
 import { migrateGlossary, type GlossaryEntry } from "./glossary";
+import type { TranscriptStyle } from "./convert";
 
 /** Only the regions that serve the LiveTranslate models — see `config::Region` in Rust. */
 export type Region = "beijing" | "singapore";
@@ -74,6 +75,8 @@ const KEY_SLOTS = ["qwen35", "openai", "gemini", "volc"] as const;
 export interface Settings {
   mode: ExecutionMode;
   transcribeOnly: boolean;
+  /** How to show the transcript's own script: "system" follows the UI, else the pick. */
+  transcriptStyle: TranscriptStyle;
   translationPace: TranslationPace;
   whisperModelPath: string;
   sensevoiceModelPath: string;
@@ -127,6 +130,7 @@ export interface Settings {
 export const settings = reactive<Settings>({
   mode: "remote",
   transcribeOnly: false,
+  transcriptStyle: "system",
   translationPace: "fast",
   whisperModelPath: "",
   sensevoiceModelPath: "",

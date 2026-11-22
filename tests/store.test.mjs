@@ -101,6 +101,19 @@ test('phone hotwords, workspace and subtitle controls persist together', async (
   assert.deepEqual(persisted.at(-1).hotwords, { 实时翻译: 'Live translation' });
 });
 
+test('the transcript script follows the UI by default and keeps an explicit pick', async () => {
+  secure = false;
+  saved = undefined;
+  const store = await fresh();
+  await store.initSettings(false);
+  assert.equal(store.settings.transcriptStyle, 'system');
+
+  saved = { transcriptStyle: "zh-TW" };
+  const restored = await fresh();
+  await restored.initSettings(false);
+  assert.equal(restored.settings.transcriptStyle, "zh-TW");
+});
+
 test('where a credential store exists persisted settings never contain API keys', async () => {
   secure = true;
   saved = undefined;

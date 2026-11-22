@@ -15,6 +15,7 @@ import About from "./components/About.vue";
 import LocaleMenu from "./components/LocaleMenu.vue";
 import History from "../shared/History.vue";
 import { locale, t } from "../core/i18n";
+import { convertTranscript, type TranscriptStyle } from "../core/convert";
 import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
 import { tw } from "../core/s2t";
 import { check, checkUpdateAtStartup, openHome } from "../core/update";
@@ -255,7 +256,12 @@ async function subtitleWindow() {
 }
 
 async function pushOverlayStyle() {
-  await emitTo("subtitle", "sub://style", { ...JSON.parse(JSON.stringify(settings.sub)), transcribeOnly: settings.mode === "local" && settings.transcribeOnly });
+  await emitTo("subtitle", "sub://style", {
+    ...JSON.parse(JSON.stringify(settings.sub)),
+    transcribeOnly: settings.mode === "local" && settings.transcribeOnly,
+    transcriptStyle: settings.transcriptStyle,
+    uiLocale: locale.value,
+  });
 }
 
 async function showOverlay(show: boolean) {
@@ -287,13 +293,26 @@ async function setOverlayClickThrough(locked: boolean) {
 void listen<Partial<SubtitleStyle>>("sub://patch", ({ payload }) => Object.assign(settings.sub, payload));
 
 watch(() => settings.sub, pushOverlayStyle, { deep: true });
-watch(() => [settings.mode, settings.transcribeOnly], pushOverlayStyle);
+watch(() => [settings.mode, settings.transcribeOnly, settings.transcriptStyle, locale.value], pushOverlayStyle);
 watch(() => settings.sub.show, showOverlay);
 watch(() => settings.sub.locked, setOverlayClickThrough);
 
 /* ---------- model / languages ---------- */
 const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) => l.code) : languageCodes(settings.protocol, settings.model));
 const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
+/**
+ * Local ASR writes Simplified Chinese whatever the source language is, so the script of the
+ * transcript is a display choice, made in the main window and pushed to the overlay.
+ */
+const transcriptStyleOptions = computed(() => [
+  { value: "system", label: t("styleSystem") },
+  { value: "zh", label: t("styleSimplified") },
+  { value: "zh-TW", label: t("styleTraditional") },
+]);
+const transcriptStylePick = computed({
+  get: () => settings.transcriptStyle,
+  set: (value: string) => { settings.transcriptStyle = value as TranscriptStyle; },
+});
 /** Under the app name, so the language list shrinking to 13 never comes out of nowhere. */
 /** The ASR model the local session uses; follows the explicit engine switch. */
 const asrEngineLabel = computed(() => {
@@ -654,6 +673,13 @@ watch([lines, current], async () => {
             </label>
             <p v-if="transcribingOnly" class="hint">{{ t("transcribeOnlyHint") }}</p>
 
+            <!-- The engine writes Simplified Chinese; the script is picked here and mirrored in the overlay. -->
+            <div v-if="settings.mode === 'local'" class="line">
+              <span>{{ t("transcriptStyle") }}</span>
+              <Picker v-model="transcriptStylePick" class="grow" :options="transcriptStyleOptions" />
+            </div>
+            <p v-if="settings.mode === 'local'" class="hint">{{ t("transcriptStyleHint") }}</p>
+
             <label v-if="!transcribingOnly" class="line">
               <span>{{ t("speak") }}</span>
               <button
@@ -818,7 +844,7 @@ watch([lines, current], async () => {
           <p v-if="!lines.length && !current.target && !current.source" class="empty">{{ t(transcribingOnly ? "transcriptionStreamEmpty" : "streamEmpty") }}</p>
 
           <article v-for="l in lines" :key="l.id" class="line-item">
-            <p v-if="l.source" class="src">{{ l.source }}</p>
+            <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
             <p v-if="l.target" class="tgt">{{ l.target }}</p>
           </article>
 
@@ -827,7 +853,7 @@ watch([lines, current], async () => {
             class="line-item live"
           >
             <p v-if="current.source || current.sourceStash" class="src">
-              {{ current.source }}<span class="stash">{{ current.sourceStash }}</span>
+              {{ convertTranscript(current.source, settings.transcriptStyle, locale) }}<span class="stash">{{ convertTranscript(current.sourceStash, settings.transcriptStyle, locale) }}</span>
             </p>
             <p v-if="!transcribingOnly || current.target || current.targetStash" class="tgt">
               {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />
