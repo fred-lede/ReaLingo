@@ -560,8 +560,34 @@ fn halt(state: &State<AppState>) {
 // AppHandle has no stable Activity accessor for the JNI round, and the bridge is how
 // LittleLobby ships the same features. src/mobile/perms.ts calls the bridge directly.
 
+/// The exe delay-loads cublas64_13.dll so it can start on machines without the
+/// CUDA Toolkit and explain what is missing. A plain LoadLibrary also resolves
+/// its dependency on cublasLt64_13.dll, so either missing DLL takes this path.
+#[cfg(all(target_os = "windows", target_env = "msvc", feature = "cuda"))]
+fn ensure_cuda_runtime() {
+    use windows::core::w;
+    use windows::Win32::System::LibraryLoader::LoadLibraryW;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    unsafe {
+        if LoadLibraryW(w!("cublas64_13.dll")).is_ok() {
+            return;
+        }
+        MessageBoxW(
+            None,
+            w!("找不到 CUDA 執行庫 cublas64_13.dll。\n\nReaLingo 的 CUDA 模式需要 NVIDIA CUDA Toolkit 13。\n請至 https://developer.nvidia.com/cuda-downloads 安裝後重新啟動。\n\n CUDA runtime library not found. Install CUDA Toolkit 13."),
+            w!("ReaLingo - 缺少 CUDA 執行庫"),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+    std::process::exit(1);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(target_os = "windows", target_env = "msvc", feature = "cuda"))]
+    ensure_cuda_runtime();
+
     #[cfg(target_os = "macos")]
     configure_metal_backend();
     #[cfg(target_os = "android")]

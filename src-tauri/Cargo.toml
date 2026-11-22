@@ -9,6 +9,13 @@ rust-version = "1.90"
 name = "realingo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Windows builds enable `cuda` by default through `npm run build:win` (see package.json).
+# Cargo has no per-platform default features, so the feature is opt-in here to keep
+# macOS builds untouched: they keep their hardcoded `metal` dependency features.
+default = []
+cuda = ["llama-cpp-2/cuda", "whisper-rs/cuda"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -56,14 +63,17 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }
 
 [target.'cfg(windows)'.dependencies]
-whisper-rs = { version = "0.16", features = ["cuda"] }
+whisper-rs = { version = "0.16" }
 whisper-rs-sys = "0.15.0"
-llama-cpp-2 = { version = "0.1.160", features = ["cuda"] }
+llama-cpp-2 = { version = "0.1.160" }
 llama-cpp-sys-2 = "0.1.160"
 # Same major as cpal's, so it is not built twice. Process loopback is not in cpal.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Threading",
     "Win32_System_Variant",

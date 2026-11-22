@@ -2,6 +2,17 @@ use std::process::Command;
 
 fn main() {
     link_clang_runtime();
+
+    // Load cuBLAS on first use instead of at process startup. A machine without the
+    // CUDA Toolkit otherwise fails before any Rust code runs, with only Windows'
+    // generic "cublas64_13.dll was not found" dialog. run() checks availability
+    // first and shows a message that tells the user what to install.
+    #[cfg(all(target_os = "windows", target_env = "msvc", feature = "cuda"))]
+    {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:cublas64_13.dll");
+        println!("cargo:rustc-link-lib=delayimp");
+    }
+
     tauri_build::build()
 }
 

@@ -1,0 +1,15 @@
+# Windows CRT alignment for the native (C/C++) dependencies.
+#
+# sherpa-onnx-sys ships prebuilt static libs built with /MT, and Tauri links the
+# final binary with /MT. Two other native build paths default to /MD:
+#   * CMake (llama.cpp / whisper.cpp) under the Visual Studio generator
+#   * the `cc` crate, used for llama's wrapper_common.o and whisper's wrapper
+# Both llama-cpp-sys-2 and whisper-rs-sys forward CMAKE_* env vars to CMake as
+# -D defines, and cc honors CFLAGS/CXXFLAGS (applied last, so they override the
+# default /MD). The target-suffixed CFLAGS only apply on MSVC, leaving other
+# platforms untouched.
+[env]
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
+LLAMA_STATIC_CRT = "1"
+CFLAGS_x86_64_pc_windows_msvc = "/MT"
+CXXFLAGS_x86_64_pc_windows_msvc = "/MT"

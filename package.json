@@ -9,7 +9,9 @@
     "test": "node --test tests/*.test.mjs",
     "icons:android": "node scripts/make-android-icons.mjs",
     "tauri": "tauri",
-    "build:macos": "bash scripts/build-macos.sh"
+    "build:macos": "bash scripts/build-macos.sh",
+    "build:win": "tauri build --bundles nsis --features cuda",
+    "build:win-cpu": "tauri build --bundles nsis --config src-tauri/tauri.cpu.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0",
