@@ -3,8 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 // `t` is a Turn everywhere in this file, so the translator comes in under another name.
-import { t as msg } from "./i18n";
+import { locale, t as msg } from "./i18n";
 import { settings } from "./store";
+import { convertTranscript, ensureTraditional, wantsTraditional } from "./convert";
 import { langName } from "./languages";
 import { emptyLocalDiagnostics, updateLocalDiagnostics } from "./local-diagnostics";
 
@@ -429,8 +430,15 @@ export async function stop() {
 export const isRunning = () =>
   status.value === "connecting" || status.value === "connected" || status.value === "stopping";
 
+/**
+ * A source line as the screen shows it. ASR writes Simplified and the transcript-script
+ * setting converts at display time; an export is written the same way so the file says what
+ * the user read. The translation is whatever the model was asked for, so it passes through.
+ */
+const asShown = (text: string) => convertTranscript(text, settings.transcriptStyle, locale.value);
+
 export function exportTxt(rows: Line[] = lines.value): string {
-  return rows.map((l) => [l.source, l.target].filter(Boolean).join("\n")).join("\n\n");
+  return rows.map((l) => [asShown(l.source), l.target].filter(Boolean).join("\n")).join("\n\n");
 }
 
 /**
@@ -452,7 +460,7 @@ export function exportSrt(rows: Line[] = lines.value): string {
       // At least a glance on screen, but never past the next line's start: that wins.
       const wanted = Math.max(start + 1000, timed && l.end != null ? l.end : (next ?? start + 3000));
       const end = next != null ? Math.max(start + 1, Math.min(wanted, next)) : wanted;
-      const body = l.source ? `${l.source}\n${l.target}` : l.target;
+      const body = l.source ? `${asShown(l.source)}\n${l.target}` : l.target;
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${body}\n`;
     })
     .join("\n");
@@ -460,6 +468,9 @@ export function exportSrt(rows: Line[] = lines.value): string {
 
 /** Save an export through the user's own file dialog. Shared by the stream and the history panel. */
 export async function saveAs(kind: "txt" | "srt", rows: Line[], stem = "translation") {
+  // The converter is lazy, so a file must not be written before its tables are in —
+  // otherwise the export carries the script the screen had not yet reached.
+  if (wantsTraditional(settings.transcriptStyle, locale.value)) await ensureTraditional();
   const bridge = typeof window === "undefined" ? undefined : (window as {
     ReaLingoAndroid?: { saveText(name: string, contents: string): void; saveTextResult(): string }
   }).ReaLingoAndroid;

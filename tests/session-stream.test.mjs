@@ -259,3 +259,15 @@ test('old history exports use relative wall time and empty exports are valid', (
   assert.equal(stream.exportSrt(rows), '1\n00:00:00,000 --> 00:00:03,000\nHello\n');
   assert.equal(stream.exportTxt(rows), 'Hello');
 });
+
+test('exports write the script the transcript is displayed in, the translation untouched', async () => {
+  const { ensureTraditional } = await import('../src/core/convert.ts');
+  const rows = [{ id: 1, source: '软件更新完成，计划已经落地', target: 'The update is done', at: 0, start: 0, end: 1000 }];
+  settings.transcriptStyle = 'zh-TW';
+  await ensureTraditional();
+  assert.equal(stream.exportTxt(rows), '軟體更新完成，計劃已經落地\nThe update is done');
+  assert.match(stream.exportSrt(rows), /軟體更新完成，計劃已經落地\nThe update is done/);
+  // "Follow system" with an English interface means the engine's own script.
+  settings.transcriptStyle = 'system';
+  assert.equal(stream.exportTxt(rows), '软件更新完成，计划已经落地\nThe update is done');
+});

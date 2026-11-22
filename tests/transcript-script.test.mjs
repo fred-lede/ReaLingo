@@ -1,6 +1,6 @@
-// Where the transcript script is applied: at display time only. The stream keeps the text
-// the ASR engine emitted, so history and TXT/SRT exports stay as spoken. These exercise the
-// overlay's real setup code and the main window's wiring.
+// Where the transcript script is applied: at display time and at export time. The stream keeps
+// the text the ASR engine emitted, so history rows and the overlay's data stay as spoken.
+// These exercise the overlay's real setup code and the main window's wiring.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { computed, nextTick, ref, watch } from 'vue';
@@ -54,8 +54,11 @@ test('the main window converts the transcript at render time, stored lines untou
   assert.match(app, /convertTranscript\(current\.sourceStash, settings\.transcriptStyle, locale\)/);
   // The transcript script is not a translation target: only the source rows move.
   assert.doesNotMatch(app, /convertTranscript\((l|current)\.target/);
-  // Stream data, exports and history keep the raw engine output.
-  assert.doesNotMatch(stream, /convertTranscript/);
+  // The stored line stays what the engine emitted; only the export builders convert.
+  assert.doesNotMatch(stream, /source: convertTranscript/);
+  assert.match(stream, /asShown\(l\.source\)/);
+  assert.doesNotMatch(stream, /asShown\(l\.target/);
+  assert.match(stream, /if \(wantsTraditional\(settings\.transcriptStyle, locale\.value\)\) await ensureTraditional\(\)/);
 });
 
 test('the overlay is told the script, not left to guess from its own stale settings', () => {

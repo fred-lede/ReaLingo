@@ -32,7 +32,7 @@ export function wantsTraditional(style: TranscriptStyle, uiLocale: string): bool
 /**
  * Show `text` the way the transcript script says. ASR emits Simplified Chinese, so this is
  * one-way only; Latin, digits and kana pass through untouched, so a mixed transcript is safe.
- * The stored line and every export stay what the engine produced.
+ * The stored line keeps what the engine emitted; the exports apply this same rule.
  */
 export function convertTranscript(text: string | undefined, style: TranscriptStyle, uiLocale: string): string {
   if (!text) return "";
