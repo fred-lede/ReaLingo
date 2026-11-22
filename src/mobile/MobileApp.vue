@@ -25,6 +25,7 @@ import { loadCaps } from "../core/platform";
 import { settings, STREAM_SIZE, activeKey, setActiveKey, keyringOk, initSettings, resolvedTheme } from "../core/store";
 import { PRESETS, PROTOCOLS, langName, modelName } from "../core/languages";
 import { locale, t, tf } from "../core/i18n";
+import { convertTranscript } from "../core/convert";
 import { checkUpdateAtStartup } from "../core/update";
 import { isRunning, lines, current, status, errorMsg, warnMsg, fileProgress, saveAs, pollHealth, detectedLang } from "../core/stream";
 import { perms, droid, refreshPerms, askMic, openAppSettings, openNotificationSettings, openBatterySettings, pendingList, setKeepScreenOn, pickAudio } from "./perms";
@@ -264,14 +265,14 @@ async function toggleOverlay() {
 function syncOverlay() {
   const active = current.source || current.sourceStash || current.target || current.targetStash;
   const pair = active ? { source: current.source + current.sourceStash, target: current.target + current.targetStash } : lines.value[lines.value.length - 1];
-  updateOverlay({ ...settings.sub, source: pair?.source ?? "", target: pair?.target ?? "",
+  updateOverlay({ ...settings.sub, source: convertTranscript(pair?.source ?? "", settings.transcriptStyle, locale.value), target: pair?.target ?? "",
     empty: emptyText.value, close: t("subHide"), resize: t("overlayWidth"),
     overlayLock: t("overlayLock"),
     notification: t("captureNotification"), captureEnded: t("captureEnded"),
     notifStart: t("notifStart"), notifStop: t("notifStop"), notifSubOn: t("notifSubOn"), notifSubOff: t("notifSubOff"),
     notifUnlock: t("notifUnlock") });
 }
-watch([() => settings.sub, current, lines, locale], syncOverlay, { deep: true });
+watch([() => settings.sub, current, lines, locale, () => settings.transcriptStyle], syncOverlay, { deep: true });
 /** Ask from the permission centre: on a permanent denial the same guide the start button
  *  uses, otherwise just the system dialog. */
 async function askFromCenter() {
