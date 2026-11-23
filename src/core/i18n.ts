@@ -1096,6 +1096,8 @@ const zhTW: typeof zh = {
   groupData: "資料與外觀",
   ifaceSub: "決定以哪種訊息格式通訊",
   srcMicSub: "收錄手機自己聽到的聲音，面對面翻譯用這個",
+  micDevice: "麥克風設備",
+  micDeviceHint: "選耳機或麥克後即可用耳機說話；拔插設備自動刷新清單",
   srcSysSub: "收錄本機播放的音訊，翻影片、播客、網路課程。每次開始會跳出一次系統授權視窗",
   srcFileSub: "選一個本地檔案翻完，SRT 時間軸能對上原影片",
   needAuth: "需授權",
