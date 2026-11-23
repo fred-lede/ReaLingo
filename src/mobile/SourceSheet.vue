@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Sheet from "./Sheet.vue";
+import ChoiceList from "./ChoiceList.vue";
 import { session } from "../core/session";
 import { caps } from "../core/platform";
 import { perms, askMic } from "./perms";
@@ -29,7 +30,11 @@ async function testMic() {
     await session.refreshDevices();
     const system = source.value === "system";
     if (!await beginCapture(system ? "system" : "mic")) return;
-    const id = await invoke<string | null>("default_device", { loopback: system });
+    // Probe the device the user actually selected (e.g. a headset mic), not just the
+    // system default: the whole point of the picker is to verify that specific input.
+    const id = system
+      ? await invoke<string | null>("default_device", { loopback: true })
+      : session.deviceId.value;
     if (!id) throw new Error(t("noDevice"));
     const samples = await invoke<number>("probe_audio", { id });
     testResult.value = samples > 0 ? t(system ? "systemTestOk" : "micTestOk") : t("micTestEmpty");
@@ -39,6 +44,25 @@ async function testMic() {
 }
 
 const canSystem = computed(() => caps.value.loopback && native.systemSupported);
+
+// session.deviceOptions is already filtered to non-loopback inputs while the mic source is
+// active, so it is exactly the microphone list — built-in, wired headset, USB, Bluetooth.
+// AAudio enumerates the same physical mic once per supported channel/rate, so collapse by
+// label: a long duplicated list would push the test button below the sheet's fold.
+const micDevices = computed(() => {
+  const seen = new Set<string>();
+  return session.deviceOptions.value.filter((d) => {
+    if (seen.has(d.label)) return false;
+    seen.add(d.label);
+    return true;
+  });
+});
+const micDeviceId = session.deviceId;
+function pickDevice(id: string) { micDeviceId.value = id; }
+
+// The sheet is mounted when the drawer opens, so re-enumerate here: a headset may have been
+// plugged in since boot, and the boot-time list in MobileApp would not show it yet.
+onMounted(() => { void session.refreshDevices(); });
 
 const micBadge = computed(() =>
   perms.mic === "granted"
@@ -85,9 +109,25 @@ const micBadge = computed(() =>
       </button>
     </div>
 
+    <!-- Keep the test button above the device list: on Android the list can be long
+         (one entry per AAudio channel/rate), and pushing the button below the fold leaves
+         it with zero bounds, which the device smoke test cannot tap. -->
     <button v-if="source !== 'file'" class="test-mic" :disabled="testing || isRunning()" @click="testMic">{{ testing ? t("micTesting") : t(source === 'system' ? "systemTest" : "micTest") }}</button>
     <p v-if="testError" role="alert" class="test-error">{{ testError }}</p>
     <p v-if="testResult" role="status">{{ testResult }}</p>
+
+    <div v-if="source === 'mic'" class="grp mic-device">
+      <span class="glabel">{{ t('micDevice') }}</span>
+      <ChoiceList
+        :label="t('micDevice')"
+        :value="micDeviceId"
+        :options="micDevices"
+        :disabled="isRunning() || testing"
+        :empty="t('noDevice')"
+        @select="pickDevice"
+      />
+      <p class="hint">{{ t('micDeviceHint') }}</p>
+    </div>
 
     <div class="grp">
       <span class="glabel">{{ t('level') }}</span>
@@ -131,4 +171,5 @@ const micBadge = computed(() =>
 .meter { height: 6px; border-radius: 3px; background: var(--shade); overflow: hidden; }
 .meter > i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, var(--ok), #ffd60a 70%, var(--danger)); transform-origin: left; transform: scaleX(0); transition: transform 0.08s linear; }
 .hint { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-3); }
+.mic-device .hint { margin-top: 8px; }
 </style>
