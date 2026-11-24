@@ -134,6 +134,10 @@ pub(crate) async fn stopped(stop: &AtomicBool) {
     while !stop.load(Ordering::Relaxed) { tokio::time::sleep(Duration::from_millis(50)).await; }
 }
 const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
+/// A relay that transcribes as slowly as it listens stops draining our frames, so an audio
+/// chunk waits for however long its ASR takes to catch up. Setup and finish keep the short
+/// timeout — only the streaming audio gives a lagging server time to drain.
+const AUDIO_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -190,8 +194,8 @@ async fn connect_and_pump(
                 for sample in &chunk { bytes.extend_from_slice(&sample.to_le_bytes()); }
                 tokio::select! {
                     _ = stopped(&stop_up) => break,
-                    result = tokio::time::timeout(WRITE_TIMEOUT, write.send(wire.audio_message(&sid, bytes))) =>
-                        result.map_err(|_| anyhow!("audio upload timed out"))??,
+                    result = tokio::time::timeout(AUDIO_WRITE_TIMEOUT, write.send(wire.audio_message(&sid, bytes))) =>
+                        result.map_err(|_| anyhow!("audio upload stalled: the server stopped reading (its ASR is behind)"))??,
                 }
                 let before = sent_up.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 let after = before + chunk.len() as u64;
@@ -202,7 +206,7 @@ async fn connect_and_pump(
             stop_up.store(true, Ordering::Relaxed);
             let chunk = chunk_samples(wire.sample_rate());
             for _ in 0..wire.flush_silence() / chunk {
-                tokio::time::timeout(WRITE_TIMEOUT, write.send(wire.audio_message(&sid, vec![0u8; chunk * 2])))
+                tokio::time::timeout(AUDIO_WRITE_TIMEOUT, write.send(wire.audio_message(&sid, vec![0u8; chunk * 2])))
                     .await.map_err(|_| anyhow!("audio flush timed out"))??;
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
