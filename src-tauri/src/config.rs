@@ -467,12 +467,27 @@ impl Settings {
         }
     }
 
+    /// OpenAI relays answer the upgrade on their realtime route, while the API base pasted
+    /// out of a curl example stops at `/v1` and answers 403 to an upgrade. Only that bare
+    /// base is completed, so a route the user named keeps its own bytes.
+    fn openai_endpoint(url: &str) -> String {
+        let base: &str = if url.len() > 1 && url.ends_with("/") { &url[..url.len() - 1] } else { url };
+        if base.ends_with("/v1") {
+            return format!("{base}/realtime");
+        }
+        url.into()
+    }
+
     pub fn ws_url(&self) -> String {
         let model = self.model();
         let custom = self.url.trim();
         if !custom.is_empty() {
             return match self.protocol {
                 Protocol::Gemini | Protocol::Volc => custom.to_string(),
+                Protocol::Openai => {
+                    let endpoint = Settings::openai_endpoint(custom);
+                    with_param(&endpoint, "model", model)
+                }
                 _ => with_param(custom, "model", model),
             };
         }
@@ -899,6 +914,22 @@ mod tests {
         c.model = " my-model ".into();
         c.url.clear();
         assert!(c.ws_url().ends_with("?model=my-model"));
+    }
+
+    #[test]
+    fn an_openai_relay_base_is_completed_to_its_realtime_route() {
+        let mut o = qwen(Region::Singapore, "llm-abc");
+        o.protocol = Protocol::Openai;
+        o.model = "gemma4:e2b".into();
+        o.url = "ws://127.0.0.1:8001/v1".into();
+        assert_eq!(o.ws_url(), "ws://127.0.0.1:8001/v1/realtime?model=gemma4:e2b");
+        o.url = " ws://127.0.0.1:8001/v1/ ".into();
+        assert_eq!(o.ws_url(), "ws://127.0.0.1:8001/v1/realtime?model=gemma4:e2b");
+        // A route the user named is left alone, and so is one that already carries a query.
+        o.url = "ws://127.0.0.1:8001/v1/realtime".into();
+        assert_eq!(o.ws_url(), "ws://127.0.0.1:8001/v1/realtime?model=gemma4:e2b");
+        o.url = "ws://127.0.0.1:8001/v1?x=1".into();
+        assert_eq!(o.ws_url(), "ws://127.0.0.1:8001/v1?x=1&model=gemma4:e2b");
     }
 
     #[test]
