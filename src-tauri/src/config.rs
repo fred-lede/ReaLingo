@@ -139,6 +139,10 @@ pub struct Settings {
     /// A Qwen default here sent "qwen3.5-…" to Gemini whenever the field was left out.
     #[serde(default)]
     pub model: String,
+    /// The transcription model the payload names. Empty => the protocol's own default
+    /// (`asr_model()`); set => sent as-is on the next connection.
+    #[serde(default)]
+    pub asr_model: String,
     /// Hotwords: source term -> preferred translation. The service asks for at most 1000.
     /// BTreeMap, not HashMap: the wire payload then has a stable order, which makes the
     /// frames readable when probing and the tests below deterministic.
@@ -449,6 +453,20 @@ impl Settings {
         }
     }
 
+    /// The transcription model the payload names. Empty is the normal case — the frontend
+    /// leaves the picker on the protocol's own default — so send that; anything the user
+    /// typed is passed through and takes effect on the next connection.
+    fn asr_model(&self) -> String {
+        let chosen = self.asr_model.trim();
+        if !chosen.is_empty() {
+            return chosen.to_string();
+        }
+        match self.protocol {
+            Protocol::Openai => OPENAI_ASR_MODEL.into(),
+            _ => ASR_MODEL.into(),
+        }
+    }
+
     pub fn ws_url(&self) -> String {
         let model = self.model();
         let custom = self.url.trim();
@@ -507,13 +525,13 @@ impl Settings {
                 "type": "session.update",
                 "session": {
                     "audio": {
-                        "input": { "transcription": { "model": OPENAI_ASR_MODEL } },
+                        "input": { "transcription": { "model": self.asr_model() } },
                         "output": { "language": self.target_code() }
                     }
                 }
             });
         }
-        let mut transcription = serde_json::json!({ "model": ASR_MODEL });
+        let mut transcription = serde_json::json!({ "model": self.asr_model() });
         // Omitting `language` is what tells the model to auto-detect the source.
         if self.source_lang != "auto" && !self.source_lang.is_empty() {
             transcription["language"] = self.asr_code().to_owned().into();
@@ -610,6 +628,7 @@ mod tests {
             transcribe_only: false,
             translation_pace: TranslationPace::Fast,
             protocol: Protocol::Qwen35,
+            asr_model: String::new(),
             api_key: "k".into(),
             openai_key: "o".into(),
             gemini_key: "g".into(),
@@ -849,6 +868,23 @@ mod tests {
         assert_eq!(session["audio"]["output"]["language"], "zh");
         assert_eq!(session["audio"]["input"]["transcription"]["model"], OPENAI_ASR_MODEL);
         assert!(session.get("translation").is_none());
+    }
+
+    #[test]
+    fn a_chosen_asr_model_replaces_the_protocol_default() {
+        let mut o = qwen(Region::Singapore, "llm-abc");
+        o.protocol = Protocol::Openai;
+        o.model.clear();
+        o.asr_model = "whisper-large-v3-turbo".into();
+        assert_eq!(o.session_update()["session"]["audio"]["input"]["transcription"]["model"], "whisper-large-v3-turbo");
+        // Blank is the normal case: the picker left the protocol's own default.
+        o.asr_model.clear();
+        assert_eq!(o.session_update()["session"]["audio"]["input"]["transcription"]["model"], OPENAI_ASR_MODEL);
+        let mut q = qwen(Region::Beijing, "");
+        q.asr_model = "  ".into();
+        assert_eq!(q.session_update()["session"]["input_audio_transcription"]["model"], ASR_MODEL);
+        q.asr_model = "qwen3-asr-flash".into();
+        assert_eq!(q.session_update()["session"]["input_audio_transcription"]["model"], "qwen3-asr-flash");
     }
 
     #[test]

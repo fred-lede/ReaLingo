@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol, type Region, type TranslationPace } from "../../core/store";
 import { isRunning } from "../../core/stream";
-import { PRESETS, PROTOCOLS, type Vendor } from "../../core/languages";
+import { ASR_MODELS, PRESETS, PROTOCOLS, type Vendor } from "../../core/languages";
 import { visibleServerAsr } from "../../core/server-asr";
 import { t } from "../../core/i18n";
 import Hotwords from "../../shared/Hotwords.vue";
@@ -98,6 +98,20 @@ const modelPick = computed({
 
 const apiKey = computed({ get: activeKey, set: setActiveKey });
 
+/** The ASR model the protocol's payload names; "" where the API has none to choose. */
+const asrDefault = computed(() => ASR_MODELS[settings.protocol]);
+const customAsr = ref(false);
+const asrOptions = computed(() =>
+  asrDefault.value ? [{ value: asrDefault.value, label: asrDefault.value }, { value: CUSTOM, label: t("modelCustom") }] : []
+);
+const asrPick = computed({
+  get: () => (customAsr.value ? CUSTOM : settings.asrModel || asrDefault.value),
+  set: (v: string) => {
+    customAsr.value = v === CUSTOM;
+    if (v !== CUSTOM) settings.asrModel = v === asrDefault.value ? "" : v;
+  },
+});
+
 /**
  * A model belongs to one protocol and a URL to one vendor (the two Qwens share an endpoint),
  * so each is put away on the way out and brought back on return: a round trip through
@@ -112,6 +126,9 @@ function pickProtocol(p: Protocol) {
   settings.model = settings.savedModels[p] ?? PRESETS[p][0].id;
   settings.url = settings.savedUrls[PROTOCOLS[p].vendor] ?? "";
   customModel.value = !PRESETS[p].some((x) => x.id === settings.model);
+  // An ASR model belongs to one protocol's payload, so the new one starts from its default.
+  settings.asrModel = "";
+  customAsr.value = false;
 }
 
 // A dropdown, not a segmented row: the list grows with every protocol added.
@@ -244,6 +261,23 @@ const advancedOpen = !!settings.url;
         <small v-if="isQwen">
           <button class="link" @click.prevent="openUrl(consoleUrl('model/market'))">{{ t("modelsLink") }} ↗</button>
         </small>
+      </div>
+
+      <!-- The ASR model the payload names. Only the JSON protocols with a transcription field
+           can pick one; Qwen3.8 supplies its own, and Gemini and Volc transcribe inside the
+           live model, so the row is absent there. -->
+      <div v-if="settings.mode === 'remote' && asrDefault" class="field">
+        <span class="label">{{ t("asrModel") }}</span>
+        <Picker v-model="asrPick" :options="asrOptions" :disabled="isRunning()" />
+        <input
+          v-if="customAsr"
+          v-model.trim="settings.asrModel"
+          type="text"
+          :placeholder="t('asrCustomPh')"
+          :disabled="isRunning()"
+          spellcheck="false"
+        />
+        <small>{{ t("asrHint") }}</small>
       </div>
 
       <!-- What the server is transcribing with. One model is loaded there and we cannot

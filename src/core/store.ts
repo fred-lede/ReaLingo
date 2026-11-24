@@ -112,6 +112,8 @@ export interface Settings {
   glossary: GlossaryEntry[];
   /** The ASR model the server reported at the last connection. Server-side choice. */
   lastServerAsr: string;
+  /** Cloud ASR model override; "" leaves it the protocol's own. Only some payloads have one. */
+  asrModel: string;
   /** Read the translation aloud. Only takes effect where `canSpeak` allows it. */
   speak: boolean;
   voice: string;
@@ -157,6 +159,7 @@ export const settings = reactive<Settings>({
   hotwords: {},
   glossary: [],
   lastServerAsr: "",
+  asrModel: "",
   speak: false,
   voice: "Tina",
   output: "",

@@ -150,6 +150,17 @@ export const PROTOCOLS: Record<Protocol, ProtocolInfo> = {
   volc: { vendor: "volc", source: "named", langs: VOLC_CODES, speaks: VOLC_SPEAKS, voices: "volc", urlAsIs: true, twoWay: true, hub: ["zh", "en"] },
 };
 
+/** The ASR model each protocol's payload names; "" where the API has no such field — Qwen3.8
+ *  supplies one itself, and Gemini and Volc transcribe inside the live model. Kept in step with
+ *  the Rust constants `ASR_MODEL` and `OPENAI_ASR_MODEL` in config.rs. */
+export const ASR_MODELS: Record<Protocol, string> = {
+  qwen35: "qwen3-asr-flash-realtime",
+  qwen38: "",
+  openai: "gpt-realtime-whisper",
+  gemini: "",
+  volc: "",
+};
+
 export interface Preset {
   id: string;
   name: string;
