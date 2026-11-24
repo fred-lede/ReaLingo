@@ -141,6 +141,21 @@ const AUDIO_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// tokio's own words for a failed handshake are opaque to a user pointing at a relay: a
+/// `wss://` against a plain-HTTP endpoint reads its first plaintext bytes as a TLS record
+/// header ("record overflow"), and a router that only upgrades at its realtime route answers
+/// 403 for every other path. Both get the fix spelled out, because the field to fix is two
+/// characters deep in the settings sheet.
+fn connect_failure(error: &str) -> String {
+    if error.contains("TLS error") || error.contains("record overflow") {
+        return format!("connect failed: {error} — the endpoint answers in plain HTTP, use ws:// not wss://");
+    }
+    if error.contains("403") || error.contains("Forbidden") {
+        return format!("connect failed: {error} — the path is not a websocket route, an OpenAI relay wants /v1/realtime");
+    }
+    format!("connect failed: {error}")
+}
+
 async fn connect_and_pump(
     settings: &Settings,
     mut audio_rx: Receiver<Vec<i16>>,
@@ -155,7 +170,7 @@ async fn connect_and_pump(
     let (ws, _) = tokio::select! {
         _ = stopped(stop) => return Ok(()),
         result = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async_tls_with_config(settings.client_request()?, None, false, connector)) =>
-            result.map_err(|_| anyhow!("connection timed out after 15s"))?.map_err(|e| anyhow!("connect failed: {e}"))?,
+            result.map_err(|_| anyhow!("connection timed out after 15s"))?.map_err(|e| anyhow!("{}", connect_failure(&format!("{e}"))))?,
     };
     let (mut write, mut read) = ws.split();
     report(Event { kind: "phase", text: "setup".into(), ..Default::default() });
@@ -1288,5 +1303,21 @@ mod tests {
         // One finished source per segment: the segment is filed once.
         let finished = sources.iter().filter(|(_, done)| *done).count();
         assert_eq!(finished, 2, "two segments, two finished sources: {sources:?}");
+    }
+
+    #[test]
+    fn a_handshake_failure_says_what_the_endpoint_wants() {
+        let plain_http = connect_failure("TLS error: native-tls error: record overflow");
+        assert!(
+            plain_http.contains("ws://"),
+            "a wss:// against a cleartext relay must name the scheme to type: {plain_http}"
+        );
+        let wrong_path = connect_failure("HTTP error: 403 Forbidden");
+        assert!(
+            wrong_path.contains("/v1/realtime"),
+            "a 403 must name the path that upgrades: {wrong_path}"
+        );
+        let other = connect_failure("HTTP error: 402 Payment Required");
+        assert_eq!(other, "connect failed: HTTP error: 402 Payment Required");
     }
 }
