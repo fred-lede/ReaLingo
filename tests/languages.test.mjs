@@ -37,3 +37,19 @@ test('only the protocols whose API accepts a script split offer zh-TW', () => {
   }
   assert.ok(languageCodes('gemini', '').includes('zh-TW'));
 });
+
+test('every protocol can still be aimed at 繁體, the split by coercion plus a display rewrite', async () => {
+  const { targetCodes } = await import('../src/core/languages.ts');
+  for (const protocol of ['qwen35', 'qwen38', 'openai', 'volc', 'gemini']) {
+    const targets = targetCodes(protocol, '');
+    assert.ok(targets.includes('zh-TW'), `${protocol} must offer 繁體中文 as a target`);
+    // A source is what the ASR hears: one Chinese, no script split to offer.
+    assert.ok(!languageCodes(protocol, '').includes('zh-TW') || protocol === 'gemini');
+    // The extra code sits next to the Chinese it is a split of, so the list stays grouped.
+    assert.equal(targets[targets.indexOf('zh') + 1], 'zh-TW');
+  }
+  // Volc speaks only its own list, and 繁體 is spoken in the Chinese voice it coerces to.
+  const { canSpeak } = await import('../src/core/languages.ts');
+  assert.ok(canSpeak('volc', 'zh-TW'));
+  assert.ok(!canSpeak('volc', 'cs'));
+});

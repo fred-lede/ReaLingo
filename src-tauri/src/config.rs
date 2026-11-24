@@ -440,6 +440,15 @@ impl Settings {
         }
     }
 
+    /// What the ASR half is told to listen for: no audio model has a code for a script split,
+    /// and the swap button can leave a 繁體 code on the source side, so send its base.
+    fn asr_code(&self) -> &str {
+        match self.source_lang.as_str() {
+            "zh-TW" => "zh",
+            code => code,
+        }
+    }
+
     pub fn ws_url(&self) -> String {
         let model = self.model();
         let custom = self.url.trim();
@@ -507,7 +516,7 @@ impl Settings {
         let mut transcription = serde_json::json!({ "model": ASR_MODEL });
         // Omitting `language` is what tells the model to auto-detect the source.
         if self.source_lang != "auto" && !self.source_lang.is_empty() {
-            transcription["language"] = self.source_lang.clone().into();
+            transcription["language"] = self.asr_code().to_owned().into();
         }
         let mut translation = serde_json::json!({ "language": self.target_code() });
         // Only when there is something to send: an empty `corpus` is not a documented
@@ -880,6 +889,17 @@ mod tests {
         // The plain Chinese target keeps the simplified variant.
         g.target_lang = "zh".into();
         assert_eq!(g.session_update()["setup"]["generationConfig"]["translationConfig"]["targetLanguageCode"], "zh-Hans");
+    }
+
+    #[test]
+    fn a_traditional_source_is_heard_as_plain_chinese() {
+        // The swap button can leave zh-TW on the source side; no audio model has a code for
+        // a script split, so the ASR half is told its base language.
+        let mut g = qwen(Region::Beijing, "llm-abc");
+        g.source_lang = "zh-TW".into();
+        assert_eq!(g.asr_code(), "zh");
+        g.source_lang = "en".into();
+        assert_eq!(g.asr_code(), "en");
     }
 
     #[test]

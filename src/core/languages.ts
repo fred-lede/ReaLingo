@@ -179,11 +179,30 @@ export function languageCodes(protocol: Protocol, model: string): string[] {
   return only ? all.filter((c) => only.has(c)) : all;
 }
 
+/** Codes the app can only reach by sending their base: the API has no script split, so the
+ *  payload says `zh` (config.rs and volc.rs coerce it) and convertTarget rewrites the answer's
+ *  script at display time. A target only — every ASR hears one Chinese, so a script split is
+ *  never offered as a source. */
+const TARGET_ONLY: Record<string, string> = { "zh-TW": "zh" };
+
+/** The target picker: what the API has codes for, plus the script splits it can still reach. */
+export function targetCodes(protocol: Protocol, model: string): string[] {
+  const codes = languageCodes(protocol, model);
+  // Keyed by the base, so the split lands next to it and the table's grouping survives.
+  const after: Record<string, string> = Object.fromEntries(
+    Object.entries(TARGET_ONLY)
+      .filter(([extra, base]) => codes.includes(base) && !codes.includes(extra))
+      .map(([extra, base]) => [base, extra])
+  );
+  return codes.flatMap((c) => after[c] ? [c, after[c]] : [c]);
+}
+
 export function canSpeak(protocol: Protocol, code: string): boolean {
   const speaks = PROTOCOLS[protocol].speaks;
   if (speaks === "all") return true;
   if (speaks === "table") return BY_CODE.get(code)?.tts ?? false;
-  return speaks.has(code);
+  // A script split is spoken in its base language's voice, which is the code we send.
+  return speaks.has(code) || speaks.has(TARGET_ONLY[code] ?? code);
 }
 
 // Voices the LiveTranslate models accept for `session.voice`, from the Model Studio voice list

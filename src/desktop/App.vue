@@ -16,7 +16,7 @@ import LocaleMenu from "./components/LocaleMenu.vue";
 import History from "../shared/History.vue";
 import { locale, t } from "../core/i18n";
 import { convertTarget, convertTranscript, type TranscriptStyle } from "../core/convert";
-import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
+import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, targetCodes, VOICE_LISTS, voiceLabel } from "../core/languages";
 import { tw } from "../core/s2t";
 import { check, checkUpdateAtStartup, openHome } from "../core/update";
 import type { BackendStatus } from "../core/local-diagnostics";
@@ -302,6 +302,9 @@ watch(() => settings.sub.locked, setOverlayClickThrough);
 
 /* ---------- model / languages ---------- */
 const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) => l.code) : languageCodes(settings.protocol, settings.model));
+/** Targets the API can serve under a coerced base code, so the picker is wider than
+ *  `langCodes` — see languages.ts `TARGET_ONLY`. Local mode names the language for the model. */
+const reachableTargets = computed(() => settings.mode === "local" ? langCodes.value : targetCodes(settings.protocol, settings.model));
 const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
 /**
  * Local ASR writes Simplified Chinese whatever the source language is, so the script of the
@@ -329,33 +332,36 @@ const modelLabel = computed(() => settings.mode === "local"
   : modelName(settings.protocol, settings.model));
 
 /** The picker matches on both UI languages, so a zh user can still type "japanese". */
-const langOptions = computed(() =>
-  langCodes.value.map((c) => ({
-    value: c,
-    label: langName(c, locale.value),
-    note: c,
-    keywords: `${langName(c, "zh")} ${langName(c, "zh-TW")} ${langName(c, "en")}`,
-  }))
-);
+const langOption = (c: string) => ({
+  value: c,
+  label: langName(c, locale.value),
+  note: c,
+  keywords: `${langName(c, "zh")} ${langName(c, "zh-TW")} ${langName(c, "en")}`,
+});
+const langOptions = computed(() => langCodes.value.map(langOption));
+const targetOptions = computed(() => reachableTargets.value.map(langOption));
 /** Volcengine wants Chinese or English on one side of every pair (PROTOCOLS `hub`). */
 const hub = computed(() => PROTOCOLS[settings.protocol].hub);
-const onHub = (code: string) => !hub.value.length || hub.value.includes(code);
+// A script split counts as its base: that is the code the payload sends, so 繁體 satisfies
+// the hub rule the same way its base language does.
+const onHub = (code: string) =>
+  !hub.value.length || hub.value.includes(code) || hub.value.includes(code.split("-")[0]);
 /** Once one side is off the hub, the other side may only offer the hub's languages. */
-const pairableWith = (other: string) =>
-  onHub(other) ? langOptions.value : langOptions.value.filter((o) => onHub(o.value));
+const pairableWith = (other: string, options = langOptions.value) =>
+  onHub(other) ? options : options.filter((o) => onHub(o.value));
 const sourceLangOptions = computed(() => [
   ...(sourceMode.value === "named" ? [] : [{ value: "auto", label: langName("auto", locale.value) }]),
   ...(sourceMode.value === "detected" ? [] : pairableWith(settings.targetLang)),
 ]);
-const targetLangOptions = computed(() => pairableWith(settings.sourceLang));
+const targetLangOptions = computed(() => pairableWith(settings.sourceLang, targetOptions.value));
 
 // Switching to the smaller model can strand a language it cannot translate into; the
 // session would then be refused server-side, so repair the selection here instead. The
 // pickers keep a pair valid from then on; this covers arriving with one already invalid.
-watch([langCodes, sourceMode, hub], ([codes, mode]) => {
+watch([langCodes, reachableTargets, sourceMode, hub], ([codes, reach, mode]) => {
   const ok = new Set(codes);
   if (settings.sourceLang !== "auto" && !ok.has(settings.sourceLang)) settings.sourceLang = "auto";
-  if (!ok.has(settings.targetLang)) settings.targetLang = ok.has("en") ? "en" : codes[0];
+  if (!new Set(reach).has(settings.targetLang)) settings.targetLang = ok.has("en") ? "en" : codes[0];
   if (mode === "named" && settings.sourceLang === "auto") settings.sourceLang = settings.targetLang === "zh" ? "en" : "zh";
   if (!onHub(settings.sourceLang) && !onHub(settings.targetLang)) settings.targetLang = hub.value[0];
 }, { immediate: true });
