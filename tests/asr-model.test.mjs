@@ -38,7 +38,8 @@ test('the Rust payload uses the same defaults', () => {
 
 test('the settings row appears only where a model can be named', () => {
   const settings = readFileSync(new URL('../src/desktop/components/Settings.vue', import.meta.url), 'utf8');
-  assert.match(settings, /v-if="settings\.mode === 'remote' && asrDefault"/);
+  // A relay that loads its own ASR picks the model itself, so the row steps aside for it.
+  assert.match(settings, /v-if="settings\.mode === 'remote' && asrDefault && !relayPresent && !relayLoading"/);
   assert.match(settings, /const asrDefault = computed\(\(\) => ASR_MODELS\[settings\.protocol\]\)/);
   // Switching protocol drops a model that belonged to the previous payload.
   assert.match(settings, /settings\.asrModel = "";\n\s*customAsr\.value = false;/);

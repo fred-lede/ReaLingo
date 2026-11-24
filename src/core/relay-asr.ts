@@ -16,9 +16,28 @@ export function relayAsrBase(url: string): string {
   return `${http}${origin[0].slice(scheme.length)}`;
 }
 
+/** One target the relay can aim at; a disabled one is shown, but cannot be chosen. */
+export interface RelayAsrTarget {
+  id: string;
+  label: string;
+  /** The relay cannot aim at it right now — its ASR worker is not reachable. */
+  disabled?: boolean;
+}
+
 /** The relay's own answer, shaped for the picker: one option per target it can aim at. */
-export async function relayAsrConfig(url: string, key: string): Promise<{ active: string; model: string; state: string; targets: { id: string; label: string }[] }> {
-  const empty = { active: "", model: "", state: "", targets: [] as { id: string; label: string }[] };
+export interface RelayAsrSnapshot {
+  /** The relay answered; it picks the ASR model itself, so the client cannot. */
+  ok: boolean;
+  active: string;
+  model: string;
+  state: string;
+  targets: RelayAsrTarget[];
+  /** The relay could not read the cluster's node list, so the nodes are missing. */
+  nodesUnknown: boolean;
+}
+
+export async function relayAsrConfig(url: string, key: string): Promise<RelayAsrSnapshot> {
+  const empty: RelayAsrSnapshot = { ok: false, active: "", model: "", state: "", targets: [], nodesUnknown: false };
   const base = relayAsrBase(url);
   if (!base) return empty;
   try {
@@ -28,21 +47,25 @@ export async function relayAsrConfig(url: string, key: string): Promise<{ active
     const targets = v?.targets;
     const local = (targets?.local ?? []) as { id?: string; name?: string }[];
     const nodes = (targets?.nodes ?? []) as { id?: string; reachable?: boolean; engine?: string; model?: string }[];
-    // An unreachable worker cannot be aimed at: the manager rejects it with "node '<id>' has
-    // no reachable asr_worker", so offering it would only be a way to fail.
+    // A node whose worker is down stays in the list, greyed out: the manager would reject it
+    // with "node '<id>' has no reachable asr_worker", and a silent gap would read as if the
+    // machine were not part of the cluster at all.
     const options = [
       ...local.map((t) => ({ id: String(t.id ?? ""), label: String(t.name || t.id || "") })),
-      ...nodes.filter((n) => n.reachable).map((n) => {
+      ...nodes.map((n) => {
         const named = [String(n.engine ?? ""), String(n.model ?? "")].filter((s) => s).join(" ");
-        return { id: String(n.id ?? ""), label: [String(n.id ?? "").replace(/^node:/, ""), named].filter((s) => s).join(" · ") };
+        const label = [String(n.id ?? "").replace(/^node:/, ""), named].filter((s) => s).join(" · ");
+        return { id: String(n.id ?? ""), label, disabled: n.reachable === false };
       }),
     ].filter((o) => o.id);
     const active = v?.active ?? {};
     return {
+      ok: true,
       active: String(active?.target_id ?? ""),
       model: String(active?.model ?? ""),
       state: String(v?.state ?? ""),
       targets: options,
+      nodesUnknown: targets?.nodes_unreachable === true,
     };
   } catch {
     return empty;

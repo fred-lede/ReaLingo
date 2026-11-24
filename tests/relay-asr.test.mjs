@@ -6,6 +6,8 @@ import test from 'node:test';
 
 const { relayAsrBase, relayAsrConfig, relayAsrSelect } = await import('../src/core/relay-asr.ts');
 
+const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
+
 test('the admin route hangs off the endpoint, not off its realtime path', () => {
   assert.equal(relayAsrBase('ws://192.168.1.210:8001/v1'), 'http://192.168.1.210:8001');
   assert.equal(relayAsrBase('wss://relay.example:8443/v1/realtime?model=x'), 'https://relay.example:8443');
@@ -43,18 +45,35 @@ test("the relay's own target list becomes the picker options", async () => {
     [
       { id: 'local:cuda:0', label: 'Apple M4 GPU' },
       { id: 'local:cpu', label: 'local:cpu' },
-      { id: 'node:m4', label: 'm4 · qwen_asr Qwen/Qwen3-ASR-0.6B' },
+      { id: 'node:m4', label: 'm4 · qwen_asr Qwen/Qwen3-ASR-0.6B', disabled: false },
+      // A node whose worker is down stays in the list, greyed out.
+      { id: 'node:m9', label: 'm9 · mlx_whisper', disabled: true },
     ]
   );
   assert.equal(found.active, 'node:m4');
   assert.equal(found.model, 'Qwen/Qwen3-ASR-0.6B');
   assert.equal(found.state, 'active');
+  assert.equal(found.ok, true);
+});
+
+test('a relay that cannot read the cluster says so instead of dropping the nodes', async () => {
+  global.fetch = async () => ({
+    ok: true,
+    json: () => ({
+      state: 'active',
+      active: { target_id: 'local:cpu', model: 'faster_whisper large-v3' },
+      targets: { local: [{ id: 'local:cpu', name: 'CPU' }], nodes: [], nodes_unreachable: true },
+    }),
+  });
+  const found = await relayAsrConfig('ws://192.168.1.210:8001/v1', 'secret');
+  assert.equal(found.nodesUnknown, true);
+  assert.deepEqual(found.targets, [{ id: 'local:cpu', label: 'CPU' }]);
 });
 
 test('a relay that answers nothing leaves the row hidden, not broken', async () => {
   global.fetch = async () => ({ ok: false });
   const found = await relayAsrConfig('wss://api.example/v1', 'secret');
-  assert.deepEqual(found, { active: '', model: '', state: '', targets: [] });
+  assert.deepEqual(found, { ok: false, active: '', model: '', state: '', targets: [], nodesUnknown: false });
 });
 
 test('picking asks the relay to load that target', async () => {
@@ -74,18 +93,30 @@ test('picking asks the relay to load that target', async () => {
 });
 
 test('the settings row offers the switch only when the relay answers', () => {
-  const settings = readFileSync(new URL('../src/desktop/components/Settings.vue', import.meta.url), 'utf8');
-  assert.match(settings, /import \{ relayAsrConfig, relayAsrSelect \} from "\.\.\/\.\.\/core\/relay-asr"/);
-  assert.match(settings, /v-if="settings\.mode === 'remote' && relayOptions\.length"/);
+  const settings = read('../src/desktop/components/Settings.vue');
+  assert.match(settings, /import \{ relayAsrConfig, relayAsrSelect, type RelayAsrTarget \} from "\.\.\/\.\.\/core\/relay-asr"/);
+  assert.match(settings, /v-if="settings\.mode === 'remote' && relayPresent"/);
   assert.match(settings, /<Picker v-model="relayPick" :options="relayOptions"/);
   // The list is read when the endpoint changes, and the pick is applied when picked.
   assert.match(settings, /watch\(\(\) => settings\.url, async \(\) => await refreshRelayAsr\(\), \{ immediate: true \}\)/);
   assert.match(settings, /await relayAsrSelect\(settings\.url, activeKey\(\), v\)/);
+  // A node without a reachable worker is shown, not offered.
+  assert.match(settings, /disabled: o\.disabled,/);
+  assert.match(settings, /note: o\.disabled \? t\("relayAsrUnreachable"\) : undefined,/);
+});
+
+test('a relay that picks its own model hides the client-side ASR model row', () => {
+  const settings = read('../src/desktop/components/Settings.vue');
+  assert.match(settings, /v-if="settings\.mode === 'remote' && asrDefault && !relayPresent && !relayLoading"/);
+  // A picker option that cannot be chosen does not take a click.
+  const picker = read('../src/desktop/components/Picker.vue');
+  assert.match(picker, /if \(option\?\.disabled\) return;/);
+  assert.match(picker, /:disabled="o\.disabled"/);
 });
 
 test('all three UI locales word the new row', () => {
-  const i18n = readFileSync(new URL('../src/core/i18n.ts', import.meta.url), 'utf8');
-  for (const key of ['relayAsr', 'relayAsrHint']) {
+  const i18n = read('../src/core/i18n.ts');
+  for (const key of ['relayAsr', 'relayAsrHint', 'relayAsrUnreachable', 'relayAsrNodesUnknown']) {
     assert.equal(i18n.split(new RegExp(`\\b${key}:`)).length - 1, 3);
   }
 });

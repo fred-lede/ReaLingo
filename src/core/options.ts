@@ -4,6 +4,8 @@ export interface SearchOption {
   note?: string;
   /** Alternate names or descriptions, including other interface languages. */
   keywords?: string;
+  /** Shown, but not choosable — an option the current state does not allow. */
+  disabled?: boolean;
 }
 
 /** Keep the original items and order so selection metadata survives filtering. */

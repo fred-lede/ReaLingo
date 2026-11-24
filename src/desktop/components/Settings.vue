@@ -6,7 +6,7 @@ import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol,
 import { isRunning } from "../../core/stream";
 import { ASR_MODELS, PRESETS, PROTOCOLS, type Vendor } from "../../core/languages";
 import { visibleServerAsr } from "../../core/server-asr";
-import { relayAsrConfig, relayAsrSelect } from "../../core/relay-asr";
+import { relayAsrConfig, relayAsrSelect, type RelayAsrTarget } from "../../core/relay-asr";
 import { t } from "../../core/i18n";
 import Hotwords from "../../shared/Hotwords.vue";
 import Picker from "./Picker.vue";
@@ -83,23 +83,50 @@ const serverAsr = computed(() => visibleServerAsr(settings.url, settings.lastSer
 
 /**
  * A relay that loads its own ASR may transcribe with another machine's worker. The dashboard
- * offers that switch; so does the app, with the options read from the relay itself — a box it
- * has not registered is never offered, and an unreachable one cannot be aimed at.
+ * offers that switch; so does the app, with the options read from the relay itself. A node
+ * whose worker is down stays in the list, greyed out with its reason — a gap would read as if
+ * the machine were not part of the cluster at all.
  */
-const relayTargets = ref<{ id: string; label: string }[]>([]);
+const relayTargets = ref<RelayAsrTarget[]>([]);
 const relayChosen = ref("");
 const relayLoaded = ref("");
 const relayModel = ref("");
+/** The endpoint answered /api/asr/config, so it picks the ASR model itself. */
+const relayPresent = ref(false);
+const relayLoading = ref(false);
+const relayNodesUnknown = ref(false);
 async function refreshRelayAsr() {
+  // A built-in vendor has no custom URL and no such route; there is nothing to ask it.
+  if (!settings.url) {
+    relayTargets.value = [];
+    relayPresent.value = false;
+    relayLoading.value = false;
+    relayNodesUnknown.value = false;
+    return;
+  }
+  relayLoading.value = true;
   const found = await relayAsrConfig(settings.url, activeKey());
+  relayLoading.value = false;
+  relayPresent.value = found.ok;
   relayTargets.value = found.targets;
   relayLoaded.value = found.active;
   relayModel.value = found.model;
+  relayNodesUnknown.value = found.nodesUnknown;
   if (!found.targets.some((o) => o.id === relayChosen.value)) relayChosen.value = "";
 }
 watch(() => settings.url, async () => await refreshRelayAsr(), { immediate: true });
-const relayOptions = computed(() => relayTargets.value.map((o) => ({ value: o.id, label: o.label })));
-const relayNote = computed(() => (relayModel.value ? ` · ${relayModel.value}` : ""));
+const relayOptions = computed(() => relayTargets.value.map((o) => ({
+  value: o.id,
+  label: o.label,
+  disabled: o.disabled,
+  note: o.disabled ? t("relayAsrUnreachable") : undefined,
+})));
+const relayNote = computed(() => {
+  const parts = [];
+  if (relayModel.value) parts.push(relayModel.value);
+  if (relayNodesUnknown.value) parts.push(t("relayAsrNodesUnknown"));
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+});
 // The switch is relay-wide, so it is applied when picked, never at some later session start.
 const relayPick = computed({
   get: () => relayChosen.value || relayLoaded.value,
@@ -299,8 +326,9 @@ const advancedOpen = !!settings.url;
 
       <!-- The ASR model the payload names. Only the JSON protocols with a transcription field
            can pick one; Qwen3.8 supplies its own, and Gemini and Volc transcribe inside the
-           live model, so the row is absent there. -->
-      <div v-if="settings.mode === 'remote' && asrDefault" class="field">
+           live model, so the row is absent there. A relay that loads its own ASR picks the
+           model itself, so the row would be a choice that does nothing. -->
+      <div v-if="settings.mode === 'remote' && asrDefault && !relayPresent && !relayLoading" class="field">
         <span class="label">{{ t("asrModel") }}</span>
         <Picker v-model="asrPick" :options="asrOptions" :disabled="isRunning()" />
         <input
@@ -324,7 +352,7 @@ const advancedOpen = !!settings.url;
 
       <!-- Only a relay that answers /api/asr/config gets this row: the built-in vendors do
            not, and inventing a target for them would only be a way to fail. -->
-      <div v-if="settings.mode === 'remote' && relayOptions.length" class="field">
+      <div v-if="settings.mode === 'remote' && relayPresent" class="field">
         <span class="label">{{ t("relayAsr") }}</span>
         <Picker v-model="relayPick" :options="relayOptions" :disabled="isRunning()" />
         <small>{{ t("relayAsrHint") }}{{ relayNote }}</small>

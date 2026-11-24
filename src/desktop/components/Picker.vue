@@ -89,6 +89,9 @@ watch(open, async (v) => {
 onBeforeUnmount(() => bind(false));
 
 function pick(value: string) {
+  // A disabled option is shown with its reason, but the current state does not allow it.
+  const option = props.options.find((o) => o.value === value);
+  if (option?.disabled) return;
   emit("update:modelValue", value);
   open.value = false;
 }
@@ -121,7 +124,8 @@ function pick(value: string) {
             v-for="o in filtered"
             :key="o.value"
             class="pk-opt"
-            :class="{ on: o.value === modelValue }"
+            :class="{ on: o.value === modelValue, off: o.disabled }"
+            :disabled="o.disabled"
             @click="pick(o.value)"
           >
             <img v-if="o.icon" class="vendor-logo pk-ic" :class="{ 'logo-mono': o.iconMono }" :src="o.icon" alt="" width="16" height="16" />
@@ -206,6 +210,10 @@ function pick(value: string) {
 }
 .pk-pop .pk-opt > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pk-pop .pk-opt:hover { background: var(--shade); }
+/* An option the current state does not allow stays visible, with its reason, and does not
+   take a click. */
+.pk-pop .pk-opt.off { opacity: 0.45; cursor: not-allowed; }
+.pk-pop .pk-opt.off:hover { background: none; }
 .pk-pop .pk-opt.on { background: var(--accent); color: #fff; }
 .pk-pop .pk-opt.on .pk-note { color: rgba(255, 255, 255, 0.7); }
 /* Short notes (a language code) sit at their natural width; long ones (a voice description)
