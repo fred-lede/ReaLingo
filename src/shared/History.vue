@@ -155,7 +155,7 @@ async function remove(id: string) {
         <p v-if="!shown.length" class="mobile-no-rows">{{ t("historyPick") }}</p>
         <article v-for="l in shown" :key="l.id" class="history-row">
           <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
-          <p class="tgt">{{ convertTarget(l.target, sessionTarget) }}</p>
+          <p v-if="l.target" class="tgt">{{ convertTarget(l.target, sessionTarget) }}</p>
         </article>
       </div>
     </template>

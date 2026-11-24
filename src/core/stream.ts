@@ -192,12 +192,19 @@ function turnFor(key: string): Turn {
   return t;
 }
 
+/**
+ * 僅轉錄 in either mode: a cloud endpoint still answers with a translation (its payload has to
+ * name a target language), so the switch drops it here instead of at every viewer — nothing the
+ * stream window, the overlay, history or an export can read ever carries it.
+ */
+const filed = (text: string) => settings.transcribeOnly ? "" : text;
+
 /** Show it in the stream as soon as there is something to show, then keep the row current. */
 function publish(t: Turn) {
-  if (!t.source && !t.target) return;
+  if (!t.source && !filed(t.target)) return;
   if (t.lineId === undefined) {
     t.lineId = nextId++;
-    const row: Line = { id: t.lineId, source: t.source, target: t.target, at: t.at, ...rowSpan(t), parts: [...t.parts] };
+    const row: Line = { id: t.lineId, source: t.source, target: filed(t.target), at: t.at, ...rowSpan(t), parts: [...t.parts] };
     rowsById.set(t.lineId, row);
     sessionLines.value.push(row);
     lines.value.push(row);
@@ -209,7 +216,7 @@ function publish(t: Turn) {
   const row = rowsById.get(t.lineId);
   if (row) {
     row.source = t.source;
-    row.target = t.target;
+    row.target = filed(t.target);
     Object.assign(row, rowSpan(t));
     row.parts = [...t.parts];
   }
@@ -223,8 +230,8 @@ function settle(t: Turn) {
 
 function close(t: Turn) {
   publish(t);
-  if (t.source || t.target) {
-    record("history_append", { entry: { at: t.at, source: t.source, target: t.target, ...rowSpan(t), ...(t.parts.length ? { parts: t.parts } : {}) } });
+  if (t.source || filed(t.target)) {
+    record("history_append", { entry: { at: t.at, source: t.source, target: filed(t.target), ...rowSpan(t), ...(t.parts.length ? { parts: t.parts } : {}) } });
   }
   turns.delete(t.key);
   if (t.input) {
@@ -247,8 +254,8 @@ function syncCurrent() {
   const t = newestTurn();
   current.source = t?.source ?? "";
   current.sourceStash = t?.sourceStash ?? "";
-  current.target = t?.target ?? "";
-  current.targetStash = t?.targetStash ?? "";
+  current.target = settings.transcribeOnly ? "" : t?.target ?? "";
+  current.targetStash = settings.transcribeOnly ? "" : t?.targetStash ?? "";
 }
 
 /** Drops every open turn; `current` follows, since it only ever mirrors the newest one. */
@@ -424,7 +431,7 @@ export async function start(source: Source, speak: boolean) {
       v: 1,
       at: Date.now(),
       source: settings.sourceLang,
-      target: settings.mode === "local" && settings.transcribeOnly ? "" : settings.targetLang,
+      target: settings.transcribeOnly ? "" : settings.targetLang,
       model: settings.mode === "local"
         ? (settings.transcribeOnly ? settings.whisperModelPath : settings.translationModelPath).split(/[\\/]/).pop() || "Local"
         : settings.model,
@@ -476,7 +483,7 @@ const asShown = (text: string) => convertTranscript(text, settings.transcriptSty
 function shownLines(line: Line, targetLang = settings.targetLang): string[] {
   const mode = settings.sub?.mode ?? "both";
   const source = asShown(line.source);
-  const target = convertTarget(line.target, targetLang);
+  const target = filed(convertTarget(line.target, targetLang));
   if (mode === "target") return target ? [target] : source ? [source] : [];
   if (mode === "source") return source ? [source] : [];
   return [source, target].filter(Boolean);

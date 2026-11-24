@@ -120,7 +120,7 @@ test('every view converts the translation line, and the export is told which lan
 test('the stream threads the target language through both export builders and its lazy guard', () => {
   const streamSrc = read('../src/core/stream.ts');
   assert.match(streamSrc, /function shownLines\(line: Line, targetLang = settings\.targetLang\)/);
-  assert.match(streamSrc, /const target = convertTarget\(line\.target, targetLang\)/);
+  assert.match(streamSrc, /const target = filed\(convertTarget\(line\.target, targetLang\)\)/);
   assert.match(streamSrc, /export function exportTxt\(rows: Line\[\] = sessionLines\.value, targetLang = settings\.targetLang\)/);
   assert.match(streamSrc, /shownLines\(l, targetLang\)\.join\("\\n"\)/);
   assert.match(streamSrc, /export async function saveAs\(kind: "txt" \| "srt", rows: Line\[\], stem = "translation", targetLang = settings\.targetLang\)/);

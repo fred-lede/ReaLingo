@@ -31,7 +31,7 @@ onMounted(async () => {
   // Read-only mirror: the main window owns persistence, this one just follows it.
   await initSettings(false);
   style.value = settings.sub;
-  transcribingOnly.value = settings.mode === "local" && settings.transcribeOnly;
+  transcribingOnly.value = settings.transcribeOnly;
   transcriptStyle.value = settings.transcriptStyle;
   uiLocale.value = locale.value;
   targetLang.value = settings.targetLang;

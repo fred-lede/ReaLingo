@@ -227,6 +227,7 @@ const advancedOpen = !!settings.url;
         <span class="label">{{ t("executionMode") }}</span>
         <Picker v-model="modePick" :options="modeOptions" :disabled="isRunning()" />
         <small v-if="settings.mode === 'local'">{{ t(settings.transcribeOnly ? "transcribeOnlyHint" : "localHint") }}</small>
+        <small v-else-if="settings.transcribeOnly">{{ t("transcribeOnlyRemoteHint") }}</small>
         <small v-else-if="!localAllowed">{{ t("localUnsupported") }}</small>
       </div>
 

@@ -260,7 +260,7 @@ async function subtitleWindow() {
 async function pushOverlayStyle() {
   await emitTo("subtitle", "sub://style", {
     ...JSON.parse(JSON.stringify(settings.sub)),
-    transcribeOnly: settings.mode === "local" && settings.transcribeOnly,
+    transcribeOnly: settings.transcribeOnly,
     transcriptStyle: settings.transcriptStyle,
     uiLocale: locale.value,
     targetLang: settings.targetLang,
@@ -305,7 +305,7 @@ const langCodes = computed(() => settings.mode === "local" ? LANGUAGES.map((l) =
 /** Targets the API can serve under a coerced base code, so the picker is wider than
  *  `langCodes` — see languages.ts `TARGET_ONLY`. Local mode names the language for the model. */
 const reachableTargets = computed(() => settings.mode === "local" ? langCodes.value : targetCodes(settings.protocol, settings.model));
-const transcribingOnly = computed(() => settings.mode === "local" && settings.transcribeOnly);
+const transcribingOnly = computed(() => settings.transcribeOnly);
 /**
  * Local ASR writes Simplified Chinese whatever the source language is, so the script of the
  * transcript is a display choice, made in the main window and pushed to the overlay.
@@ -675,11 +675,11 @@ watch([lines, current], async () => {
               </div>
             </div>
 
-            <label v-if="settings.mode === 'local'" class="line">
+            <label class="line">
               <span>{{ t("transcribeOnly") }}</span>
               <button class="sw" :class="{ on: settings.transcribeOnly }" :disabled="isRunning()" @click="settings.transcribeOnly = !settings.transcribeOnly" />
             </label>
-            <p v-if="transcribingOnly" class="hint">{{ t("transcribeOnlyHint") }}</p>
+            <p v-if="transcribingOnly" class="hint">{{ t(settings.mode === "local" ? "transcribeOnlyHint" : "transcribeOnlyRemoteHint") }}</p>
 
             <!-- The engine writes Simplified Chinese; the script is picked here and mirrored in the overlay. -->
             <div class="line">
