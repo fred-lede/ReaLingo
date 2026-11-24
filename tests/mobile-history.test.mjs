@@ -11,8 +11,8 @@ test('mobile history loads, searches, exports and confirms deletion of the selec
   const calls = [], exports = [];
   const history = vueScript(new URL('../src/shared/History.vue', import.meta.url), {
     ref, computed, onMounted: () => {}, defineProps: () => ({ mobile: true }), defineEmits: () => {},
-    settings: { history: true }, caps: ref({}), locale: ref('en'), t: key => key, langName: key => key,
-    convertTranscript: (text) => text,
+    settings: { history: true, targetLang: 'en' }, caps: ref({}), locale: ref('en'), t: key => key, langName: key => key,
+    convertTranscript: (text) => text, convertTarget: (text) => text,
     invoke: async (cmd, args) => {
       calls.push([cmd, args]);
       if (cmd === 'history_list') return [...sessions];
@@ -21,7 +21,7 @@ test('mobile history loads, searches, exports and confirms deletion of the selec
       if (cmd === 'history_clear') sessions.length = 0;
     },
     saveAs: async (...args) => exports.push(args),
-  }, ['load', 'open', 'q', 'shown', 'saveRows', 'remove', 'clearAll', 'openId', 'sessions', 'props', 'err', 'settings', 't', 'when', 'pair', 'armed', 'convertTranscript']);
+  }, ['load', 'open', 'q', 'shown', 'saveRows', 'remove', 'clearAll', 'openId', 'sessions', 'props', 'err', 'settings', 't', 'when', 'pair', 'armed', 'sessionTarget', 'convertTranscript', 'convertTarget']);
   await history.load();
   assert.equal(history.openId.value, 'old');
   await history.open('new');
@@ -31,7 +31,7 @@ test('mobile history loads, searches, exports and confirms deletion of the selec
   history.q.value = ' 世界 ';
   assert.equal(history.shown.value.length, 1);
   await history.saveRows('srt');
-  assert.deepEqual(exports[0], ['srt', [{ id: 0, source: 'World', target: '世界' }], 'new']);
+  assert.deepEqual(exports[0], ['srt', [{ id: 0, source: 'World', target: '世界' }], 'new', 'en']);
   await history.remove('new');
   assert.equal(calls.some(([cmd]) => cmd === 'history_delete'), false);
   await history.remove('new');

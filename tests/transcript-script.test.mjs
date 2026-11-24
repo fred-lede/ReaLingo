@@ -6,7 +6,7 @@ import test from 'node:test';
 import { computed, nextTick, ref, watch } from 'vue';
 import { readFileSync } from 'node:fs';
 import { vueScript } from './helpers/vue-script.mjs';
-import { convertTranscript, ensureTraditional } from '../src/core/convert.ts';
+import { convertTarget, convertTranscript, ensureTraditional } from '../src/core/convert.ts';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
@@ -22,7 +22,7 @@ test('the overlay renders the transcript in the script the main window sends it'
     current: { source: '软件更新完成', target: '', sourceStash: '', targetStash: '' },
     lines: ref([{ id: 1, source: '出租车', target: '' }]),
     locale: ref('zh'),
-    convertTranscript,
+    convertTranscript, convertTarget,
     t: (key) => key,
   }, ['src', 'showSource', 'transcribingOnly', 'transcriptStyle']);
 
@@ -59,15 +59,15 @@ test('the main window converts the transcript at render time, stored lines untou
   assert.doesNotMatch(stream, /source: convertTranscript/);
   assert.match(stream, /const source = asShown\(line\.source\)/);
   assert.doesNotMatch(stream, /asShown\((line|l)\.target/);
-  assert.match(stream, /shownLines\((l|line)\)\.join\("\\n"\)/);
+  assert.match(stream, /shownLines\((l|line)(, targetLang)?\)\.join\("\\n"\)/);
   assert.match(stream, /const mode = settings\.sub\?\.mode \?\? "both"/);
-  assert.match(stream, /if \(wantsTraditional\(settings\.transcriptStyle, locale\.value\)\) await ensureTraditional\(\)/);
+  assert.match(stream, /if \(wantsTraditional\(settings\.transcriptStyle, locale\.value\) \|\| targetLang === "zh-TW"\) await ensureTraditional\(\)/);
 });
 
 test('the overlay is told the script, not left to guess from its own stale settings', () => {
   const app = read('../src/desktop/App.vue');
   assert.match(app, /transcriptStyle: settings\.transcriptStyle/);
-  assert.match(app, /watch\(\(\) => \[settings\.mode, settings\.transcribeOnly, settings\.transcriptStyle, locale\.value\], pushOverlayStyle\)/);
+  assert.match(app, /watch\(\(\) => \[settings\.mode, settings\.transcribeOnly, settings\.transcriptStyle, settings\.targetLang, locale\.value\], pushOverlayStyle\)/);
 });
 
 // Cloud ASR writes Simplified too, so the choice matters outside local mode as well.

@@ -13,13 +13,16 @@ import {
 import { initSettings, settings, type SubtitleStyle } from "../core/store";
 import { current, lines } from "../core/stream";
 import { locale, t } from "../core/i18n";
-import { convertTranscript, type TranscriptStyle } from "../core/convert";
+import { convertTarget, convertTranscript, type TranscriptStyle } from "../core/convert";
 
 const style = ref<SubtitleStyle>(settings.sub);
 const transcribingOnly = ref(false);
 /** The main window owns the transcript script; this mirror keeps the overlay in step. */
 const transcriptStyle = ref<TranscriptStyle>(settings.transcriptStyle);
 const uiLocale = ref<string>(locale.value);
+/** The main window owns the target language; this mirror only follows it, so a 繁體 target
+ *  reads Traditional in the overlay even when the model answered in Simplified. */
+const targetLang = ref<string>(settings.targetLang);
 const barEl = ref<HTMLElement | null>(null);
 
 onMounted(async () => {
@@ -31,6 +34,7 @@ onMounted(async () => {
   transcribingOnly.value = settings.mode === "local" && settings.transcribeOnly;
   transcriptStyle.value = settings.transcriptStyle;
   uiLocale.value = locale.value;
+  targetLang.value = settings.targetLang;
   await restoreRect();
   const w = getCurrentWindow();
   void w.onMoved(saveRect);
@@ -137,11 +141,12 @@ function tail() {
   });
 }
 
-void listen<SubtitleStyle & { transcribeOnly?: boolean; transcriptStyle?: TranscriptStyle; uiLocale?: string }>("sub://style", ({ payload }) => {
+void listen<SubtitleStyle & { transcribeOnly?: boolean; transcriptStyle?: TranscriptStyle; uiLocale?: string; targetLang?: string }>("sub://style", ({ payload }) => {
   style.value = payload;
   transcribingOnly.value = !!payload.transcribeOnly;
   transcriptStyle.value = payload.transcriptStyle ?? transcriptStyle.value;
   uiLocale.value = payload.uiLocale ?? uiLocale.value;
+  targetLang.value = payload.targetLang ?? targetLang.value;
 });
 
 /**
@@ -190,9 +195,9 @@ async function openMenu() {
 const last = computed(() => lines.value[lines.value.length - 1]);
 const live = computed(() => !!(current.source || current.target || current.sourceStash || current.targetStash));
 const src = computed(() => convertTranscript(live.value ? current.source : last.value?.source ?? "", transcriptStyle.value, uiLocale.value));
-const tgt = computed(() => (live.value ? current.target : last.value?.target ?? ""));
+const tgt = computed(() => convertTarget(live.value ? current.target : last.value?.target ?? "", targetLang.value));
 const srcStash = computed(() => convertTranscript(live.value ? current.sourceStash : "", transcriptStyle.value, uiLocale.value));
-const tgtStash = computed(() => (live.value ? current.targetStash : ""));
+const tgtStash = computed(() => convertTarget(live.value ? current.targetStash : "", targetLang.value));
 
 // The height observer only sees the plate grow downwards; a line growing sideways has to
 // be chased separately, after the DOM has the new text.

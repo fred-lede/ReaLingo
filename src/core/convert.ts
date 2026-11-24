@@ -9,16 +9,23 @@ export type TranscriptStyle = "system" | "zh" | "zh-TW";
  * as-is, and when the tables arrive the flip re-renders the line.
  */
 const ready = ref(false);
-let toTraditional: ((text: string) => string) | undefined;
+let cn2t: ((text: string) => string) | undefined;
 let loading: Promise<void> | undefined;
 
 /** Load the one-way converter. Safe to call repeatedly; the second call awaits the first. */
 export function ensureTraditional(): Promise<void> {
   loading ??= import("js-opencc/cn2t").then(({ Converter }) => {
-    toTraditional = Converter({ to: "twp" });
+    cn2t = Converter({ to: "twp" });
     ready.value = true;
   });
   return loading;
+}
+
+/** Traditional Han characters for `text`, whatever script came in. Lazy: a render that beats
+ * the tables gets the text as-is and re-renders once `ready` flips. */
+function traditional(text: string): string {
+  if (!ready.value) void ensureTraditional();
+  return ready.value ? cn2t!(text) : text;
 }
 
 /**
@@ -36,7 +43,16 @@ export function wantsTraditional(style: TranscriptStyle, uiLocale: string): bool
  */
 export function convertTranscript(text: string | undefined, style: TranscriptStyle, uiLocale: string): string {
   if (!text) return "";
-  if (!wantsTraditional(style, uiLocale)) return text;
-  if (!ready.value) void ensureTraditional();
-  return ready.value ? toTraditional!(text) : text;
+  return wantsTraditional(style, uiLocale) ? traditional(text) : text;
+}
+
+/**
+ * A translation line in the script its own language asks for. A 繁體中文 target has to read
+ * Traditional even when the model answers in Simplified — a small local model and every cloud
+ * API that only knows one `zh` do that often — so the guarantee is made here, not in the prompt.
+ * A plain `zh` target keeps whatever the model wrote: the app never rewrites Simplified away.
+ */
+export function convertTarget(text: string | undefined, targetLang: string): string {
+  if (!text) return "";
+  return targetLang === "zh-TW" ? traditional(text) : text;
 }

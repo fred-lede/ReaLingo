@@ -15,7 +15,7 @@ import About from "./components/About.vue";
 import LocaleMenu from "./components/LocaleMenu.vue";
 import History from "../shared/History.vue";
 import { locale, t } from "../core/i18n";
-import { convertTranscript, type TranscriptStyle } from "../core/convert";
+import { convertTarget, convertTranscript, type TranscriptStyle } from "../core/convert";
 import { canSpeak, LANGUAGES, langName, languageCodes, modelName, PROTOCOLS, VOICE_LISTS, voiceLabel } from "../core/languages";
 import { tw } from "../core/s2t";
 import { check, checkUpdateAtStartup, openHome } from "../core/update";
@@ -263,6 +263,7 @@ async function pushOverlayStyle() {
     transcribeOnly: settings.mode === "local" && settings.transcribeOnly,
     transcriptStyle: settings.transcriptStyle,
     uiLocale: locale.value,
+    targetLang: settings.targetLang,
   });
 }
 
@@ -295,7 +296,7 @@ async function setOverlayClickThrough(locked: boolean) {
 void listen<Partial<SubtitleStyle>>("sub://patch", ({ payload }) => Object.assign(settings.sub, payload));
 
 watch(() => settings.sub, pushOverlayStyle, { deep: true });
-watch(() => [settings.mode, settings.transcribeOnly, settings.transcriptStyle, locale.value], pushOverlayStyle);
+watch(() => [settings.mode, settings.transcribeOnly, settings.transcriptStyle, settings.targetLang, locale.value], pushOverlayStyle);
 watch(() => settings.sub.show, showOverlay);
 watch(() => settings.sub.locked, setOverlayClickThrough);
 
@@ -846,7 +847,7 @@ watch([lines, current], async () => {
 
           <article v-for="l in lines" :key="l.id" class="line-item">
             <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
-            <p v-if="l.target" class="tgt">{{ l.target }}</p>
+            <p v-if="l.target" class="tgt">{{ convertTarget(l.target, settings.targetLang) }}</p>
           </article>
 
           <article
@@ -857,7 +858,7 @@ watch([lines, current], async () => {
               {{ convertTranscript(current.source, settings.transcriptStyle, locale) }}<span class="stash">{{ convertTranscript(current.sourceStash, settings.transcriptStyle, locale) }}</span>
             </p>
             <p v-if="!transcribingOnly || current.target || current.targetStash" class="tgt">
-              {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />
+              {{ convertTarget(current.target, settings.targetLang) }}<span class="stash">{{ convertTarget(current.targetStash, settings.targetLang) }}</span><span class="caret" />
             </p>
           </article>
         </div>

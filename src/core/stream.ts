@@ -5,7 +5,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 // `t` is a Turn everywhere in this file, so the translator comes in under another name.
 import { locale, t as msg } from "./i18n";
 import { settings } from "./store";
-import { convertTranscript, ensureTraditional, wantsTraditional } from "./convert";
+import { convertTarget, convertTranscript, ensureTraditional, wantsTraditional } from "./convert";
 import { langName } from "./languages";
 import { emptyLocalDiagnostics, updateLocalDiagnostics } from "./local-diagnostics";
 
@@ -458,7 +458,8 @@ export const isRunning = () =>
 /**
  * A source line as the screen shows it. ASR writes Simplified and the transcript-script
  * setting converts at display time; an export is written the same way so the file says what
- * the user read. The translation is whatever the model was asked for, so it passes through.
+ * the user read. The translation carries its own rule: a 繁體中文 target is written Traditional
+ * here too, because models answer in whichever Chinese they feel like.
  */
 const asShown = (text: string) => convertTranscript(text, settings.transcriptStyle, locale.value);
 
@@ -467,16 +468,22 @@ const asShown = (text: string) => convertTranscript(text, settings.transcriptSty
  * mode a row the engine never translated has nothing on its right half, so its transcript is
  * what was on screen; a row with neither is left out rather than exported as an empty cue.
  */
-function shownLines(line: Line): string[] {
+/**
+ * What a line contributes to a file: the same lines the subtitle overlay shows. In target-only
+ * mode a row the engine never translated has nothing on its right half, so its transcript is
+ * what was on screen; a row with neither is left out rather than exported as an empty cue.
+ */
+function shownLines(line: Line, targetLang = settings.targetLang): string[] {
   const mode = settings.sub?.mode ?? "both";
   const source = asShown(line.source);
-  if (mode === "target") return line.target ? [line.target] : source ? [source] : [];
+  const target = convertTarget(line.target, targetLang);
+  if (mode === "target") return target ? [target] : source ? [source] : [];
   if (mode === "source") return source ? [source] : [];
-  return [source, line.target].filter(Boolean);
+  return [source, target].filter(Boolean);
 }
 
-export function exportTxt(rows: Line[] = sessionLines.value): string {
-  return rows.map((l) => shownLines(l).join("\n")).filter(Boolean).join("\n\n");
+export function exportTxt(rows: Line[] = sessionLines.value, targetLang = settings.targetLang): string {
+  return rows.map((l) => shownLines(l, targetLang).join("\n")).filter(Boolean).join("\n\n");
 }
 
 /**
@@ -484,9 +491,9 @@ export function exportTxt(rows: Line[] = sessionLines.value): string {
  * otherwise when its text arrived on the audio's clock (late by the model's latency). History
  * written before that was recorded falls back to wall-clock arrival, counted from the earliest line.
  */
-export function exportSrt(rows: Line[] = sessionLines.value): string {
+export function exportSrt(rows: Line[] = sessionLines.value, targetLang = settings.targetLang): string {
   // A line the mode hides contributes no cue at all, so the numbering stays dense.
-  const shown = rows.filter((l) => shownLines(l).length);
+  const shown = rows.filter((l) => shownLines(l, targetLang).length);
   const timed = shown.length > 0 && shown.every((l) => l.start != null);
   // Counting from the first row would put an earlier row in the negative.
   const t0 = shown.reduce((earliest, l) => Math.min(earliest, l.at), Number.MAX_SAFE_INTEGER);
@@ -501,22 +508,22 @@ export function exportSrt(rows: Line[] = sessionLines.value): string {
       // At least a glance on screen, but never past the next line's start: that wins.
       const wanted = Math.max(start + 1000, timed && l.end != null ? l.end : (next ?? start + 3000));
       const end = next != null ? Math.max(start + 1, Math.min(wanted, next)) : wanted;
-      const body = shownLines(l).join("\n");
+      const body = shownLines(l, targetLang).join("\n");
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${body}\n`;
     })
     .join("\n");
 }
 
 /** Save an export through the user's own file dialog. Shared by the stream and the history panel. */
-export async function saveAs(kind: "txt" | "srt", rows: Line[], stem = "translation") {
+export async function saveAs(kind: "txt" | "srt", rows: Line[], stem = "translation", targetLang = settings.targetLang) {
   // The converter is lazy, so a file must not be written before its tables are in —
   // otherwise the export carries the script the screen had not yet reached.
-  if (wantsTraditional(settings.transcriptStyle, locale.value)) await ensureTraditional();
+  if (wantsTraditional(settings.transcriptStyle, locale.value) || targetLang === "zh-TW") await ensureTraditional();
   const bridge = typeof window === "undefined" ? undefined : (window as {
     ReaLingoAndroid?: { saveText(name: string, contents: string): void; saveTextResult(): string }
   }).ReaLingoAndroid;
   if (bridge?.saveText) {
-    bridge.saveText(`${stem}.${kind}`, kind === "txt" ? exportTxt(rows) : exportSrt(rows));
+    bridge.saveText(`${stem}.${kind}`, kind === "txt" ? exportTxt(rows, targetLang) : exportSrt(rows, targetLang));
     // The system document picker owns the destination; content:// is not a Rust path.
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -530,7 +537,7 @@ export async function saveAs(kind: "txt" | "srt", rows: Line[], stem = "translat
     filters: [{ name: kind.toUpperCase(), extensions: [kind] }],
   });
   if (!path) return;
-  await invoke("write_text", { path, contents: kind === "txt" ? exportTxt(rows) : exportSrt(rows) });
+  await invoke("write_text", { path, contents: kind === "txt" ? exportTxt(rows, targetLang) : exportSrt(rows, targetLang) });
 }
 
 function srtTime(ms: number): string {

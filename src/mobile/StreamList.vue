@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 import { settings } from "../core/store";
-import { convertTranscript } from "../core/convert";
+import { convertTarget, convertTranscript } from "../core/convert";
 import type { Line } from "../core/stream";
 import { current } from "../core/session";
 import { locale, t } from "../core/i18n";
@@ -40,7 +40,7 @@ watch([() => current.target, () => current.targetStash, () => props.lines.length
 
     <article v-for="l in lines" :key="l.id" class="line-item">
       <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
-      <p class="tgt">{{ l.target }}</p>
+      <p class="tgt">{{ convertTarget(l.target, settings.targetLang) }}</p>
     </article>
 
     <article v-if="live && (current.source || current.target || current.sourceStash || current.targetStash)" class="line-item live">
@@ -48,7 +48,7 @@ watch([() => current.target, () => current.targetStash, () => props.lines.length
         {{ convertTranscript(current.source, settings.transcriptStyle, locale) }}<span class="stash">{{ convertTranscript(current.sourceStash, settings.transcriptStyle, locale) }}</span>
       </p>
       <p class="tgt">
-        {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />
+        {{ convertTarget(current.target, settings.targetLang) }}<span class="stash">{{ convertTarget(current.targetStash, settings.targetLang) }}</span><span class="caret" />
       </p>
     </article>
     <button v-if="!pinned" class="jump" :aria-label="t('backToLatest')" @click="backToBottom">

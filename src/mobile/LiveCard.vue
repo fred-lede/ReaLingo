@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { current, isRunning, session } from "../core/session";
 import { settings } from "../core/store";
 import { locale, t } from "../core/i18n";
-import { convertTranscript } from "../core/convert";
+import { convertTarget, convertTranscript } from "../core/convert";
 
 /** Whether the live sentence has anything on either side of the pair. */
 const hasLive = computed(() => !!(current.source || current.sourceStash || current.target || current.targetStash));
@@ -22,7 +22,7 @@ const hasLive = computed(() => !!(current.source || current.sourceStash || curre
         {{ convertTranscript(current.source, settings.transcriptStyle, locale) }}<span class="stash">{{ convertTranscript(current.sourceStash, settings.transcriptStyle, locale) }}</span>
       </p>
       <p class="tgt">
-        {{ current.target }}<span class="stash">{{ current.targetStash }}</span><span class="caret" />
+        {{ convertTarget(current.target, settings.targetLang) }}<span class="stash">{{ convertTarget(current.targetStash, settings.targetLang) }}</span><span class="caret" />
       </p>
     </template>
     <!-- Running but nothing said yet: reuse the status copy instead of inventing one. -->

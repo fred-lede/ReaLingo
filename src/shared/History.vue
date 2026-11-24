@@ -5,7 +5,7 @@ import { langName } from "../core/languages";
 import { locale, t } from "../core/i18n";
 import { saveAs, type Line } from "../core/stream";
 import { settings } from "../core/store";
-import { convertTranscript } from "../core/convert";
+import { convertTarget, convertTranscript } from "../core/convert";
 import { caps } from "../core/platform";
 import Sheet from "./Sheet.vue";
 
@@ -81,6 +81,13 @@ const shown = computed(() => {
   return rows.value.filter((l) => `${l.source}\n${l.target}`.toLowerCase().includes(needle));
 });
 
+/**
+ * The opened session's own target language, not whatever the picker is set to now: a saved
+ * 繁體 session still reads Traditional once the user has moved on to another language.
+ */
+const sessionTarget = computed(() =>
+  sessions.value.find((s) => s.id === openId.value)?.meta?.target ?? settings.targetLang);
+
 /** True on the second click, and disarms; false on the first, and arms. */
 function armedFor(what: string): boolean {
   if (armed.value === what) {
@@ -102,7 +109,7 @@ const openDir = async () => {
 };
 
 async function saveRows(kind: "txt" | "srt") {
-  try { await saveAs(kind, shown.value, openId.value); } catch (e) { err.value = String(e); }
+  try { await saveAs(kind, shown.value, openId.value, sessionTarget.value); } catch (e) { err.value = String(e); }
 }
 async function remove(id: string) {
   if (!armedFor(id)) return;
@@ -148,7 +155,7 @@ async function remove(id: string) {
         <p v-if="!shown.length" class="mobile-no-rows">{{ t("historyPick") }}</p>
         <article v-for="l in shown" :key="l.id" class="history-row">
           <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
-          <p class="tgt">{{ l.target }}</p>
+          <p class="tgt">{{ convertTarget(l.target, sessionTarget) }}</p>
         </article>
       </div>
     </template>
@@ -192,7 +199,7 @@ async function remove(id: string) {
           <p v-if="!shown.length" class="blank">{{ t("historyPick") }}</p>
           <article v-for="l in shown" :key="l.id">
             <p v-if="l.source" class="src">{{ convertTranscript(l.source, settings.transcriptStyle, locale) }}</p>
-            <p v-if="l.target" class="tgt">{{ l.target }}</p>
+            <p v-if="l.target" class="tgt">{{ convertTarget(l.target, sessionTarget) }}</p>
           </article>
         </div>
       </div>
