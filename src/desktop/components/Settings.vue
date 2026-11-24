@@ -6,6 +6,7 @@ import { activeKey, keyringOk, REGION_ID, setActiveKey, settings, type Protocol,
 import { isRunning } from "../../core/stream";
 import { ASR_MODELS, PRESETS, PROTOCOLS, type Vendor } from "../../core/languages";
 import { visibleServerAsr } from "../../core/server-asr";
+import { relayAsrConfig, relayAsrSelect } from "../../core/relay-asr";
 import { t } from "../../core/i18n";
 import Hotwords from "../../shared/Hotwords.vue";
 import Picker from "./Picker.vue";
@@ -79,6 +80,36 @@ const vendor = computed(() => PROTOCOLS[settings.protocol].vendor);
 const isQwen = computed(() => vendor.value === "qwen");
 /** The ASR model the server reported, for a custom endpoint only. */
 const serverAsr = computed(() => visibleServerAsr(settings.url, settings.lastServerAsr));
+
+/**
+ * A relay that loads its own ASR may transcribe with another machine's worker. The dashboard
+ * offers that switch; so does the app, with the options read from the relay itself — a box it
+ * has not registered is never offered, and an unreachable one cannot be aimed at.
+ */
+const relayTargets = ref<{ id: string; label: string }[]>([]);
+const relayChosen = ref("");
+const relayLoaded = ref("");
+const relayModel = ref("");
+async function refreshRelayAsr() {
+  const found = await relayAsrConfig(settings.url, activeKey());
+  relayTargets.value = found.targets;
+  relayLoaded.value = found.active;
+  relayModel.value = found.model;
+  if (!found.targets.some((o) => o.id === relayChosen.value)) relayChosen.value = "";
+}
+watch(() => settings.url, async () => await refreshRelayAsr(), { immediate: true });
+const relayOptions = computed(() => relayTargets.value.map((o) => ({ value: o.id, label: o.label })));
+const relayNote = computed(() => (relayModel.value ? ` · ${relayModel.value}` : ""));
+// The switch is relay-wide, so it is applied when picked, never at some later session start.
+const relayPick = computed({
+  get: () => relayChosen.value || relayLoaded.value,
+  set: (v: string) => {
+    if (v === (relayChosen.value || relayLoaded.value)) return;
+    relayChosen.value = v;
+    // The relay loads the new target in the background, so the row is refreshed once it answers.
+    void (async () => { await relayAsrSelect(settings.url, activeKey(), v); await refreshRelayAsr(); })();
+  },
+});
 
 const presets = computed(() =>
   PRESETS[settings.protocol].map((p) => ({ value: p.id, label: p.name, note: `${p.langs} ${t("langsUnit")}` }))
@@ -288,6 +319,14 @@ const advancedOpen = !!settings.url;
         <span class="label">{{ t("serverAsrModel") }}</span>
         <code class="endpoint">{{ serverAsr }}</code>
         <small>{{ t("serverAsrHint") }}</small>
+      </div>
+
+      <!-- Only a relay that answers /api/asr/config gets this row: the built-in vendors do
+           not, and inventing a target for them would only be a way to fail. -->
+      <div v-if="settings.mode === 'remote' && relayOptions.length" class="field">
+        <span class="label">{{ t("relayAsr") }}</span>
+        <Picker v-model="relayPick" :options="relayOptions" :disabled="isRunning()" />
+        <small>{{ t("relayAsrHint") }}{{ relayNote }}</small>
       </div>
 
       <div v-if="settings.mode === 'remote' && isQwen" class="field">
