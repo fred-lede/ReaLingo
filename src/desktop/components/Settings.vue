@@ -100,10 +100,12 @@ const apiKey = computed({ get: activeKey, set: setActiveKey });
 
 /** The ASR model the protocol's payload names; "" where the API has none to choose. */
 const asrDefault = computed(() => ASR_MODELS[settings.protocol]);
-const customAsr = ref(false);
 const asrOptions = computed(() =>
   asrDefault.value ? [{ value: asrDefault.value, label: asrDefault.value }, { value: CUSTOM, label: t("modelCustom") }] : []
 );
+// Derived, not remembered: the chosen id is persisted in settings and the flag is not, so a
+// restarted app would hide the field behind a picker showing a value it never offers.
+const customAsr = ref(!asrOptions.value.some((o) => o.value === (settings.asrModel || asrDefault.value)));
 const asrPick = computed({
   get: () => (customAsr.value ? CUSTOM : settings.asrModel || asrDefault.value),
   set: (v: string) => {

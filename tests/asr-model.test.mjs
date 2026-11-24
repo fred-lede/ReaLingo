@@ -44,6 +44,16 @@ test('the settings row appears only where a model can be named', () => {
   assert.match(settings, /settings\.asrModel = "";\n\s*customAsr\.value = false;/);
 });
 
+test('the chosen model is persisted and its 自定 state rebuilt on load', () => {
+  const store = readFileSync(new URL('../src/core/store.ts', import.meta.url), 'utf8');
+  // Part of the Settings object, so the whole-settings save carries it.
+  assert.match(store, /^\s{2}asrModel: string;$/m);
+  const settings = readFileSync(new URL('../src/desktop/components/Settings.vue', import.meta.url), 'utf8');
+  // The flag is in memory only, so it is derived from the saved id rather than started false.
+  assert.match(settings, /const customAsr = ref\(!asrOptions\.value\.some\(\(o\) => o\.value === \(settings\.asrModel \|\| asrDefault\.value\)\)\)/);
+  assert.match(settings, /v-if="customAsr"/);
+});
+
 test('all three UI locales word the new row', () => {
   const i18n = readFileSync(new URL('../src/core/i18n.ts', import.meta.url), 'utf8');
   for (const key of ['asrModel', 'asrHint', 'asrCustomPh']) {
